@@ -3,9 +3,11 @@ import type {
   EnhancedProxyOptions,
   CookieRewriteOptions,
   LoggerOptions,
+  ResolvedProxyLog,
   ResolvedProxyOptions,
   ResolvedConfig,
 } from "./types";
+import { LOGGER_DEFAULTS } from "./logger";
 
 // ─── Validation ────────────────────────────────────────────────
 
@@ -52,12 +54,9 @@ function validateTarget(
 
 // ─── Cookie Defaults ───────────────────────────────────────────
 
-const COOKIE_DEFAULTS: Required<CookieRewriteOptions> = {
+const COOKIE_DEFAULTS: CookieRewriteOptions = {
   rewriteDomain: false,
-  domain: "",
-  secure: false,
   rewritePath: false,
-  path: "",
   inject: {},
   exclude: [],
 };
@@ -70,13 +69,20 @@ function resolveCookieRewrite(
   return { ...COOKIE_DEFAULTS, ...input };
 }
 
-// ─── Logger Defaults ───────────────────────────────────────────
+// ─── Logger Resolution ─────────────────────────────────────────
 
-const LOGGER_DEFAULTS: Required<LoggerOptions> = {
-  level: "info",
-  logMatches: false,
-  logCookieRewrites: false,
-};
+function resolveProxyLog(
+  input: boolean | LoggerOptions | undefined,
+  globalLogger: Required<LoggerOptions>,
+): ResolvedProxyLog {
+  if (input === undefined || input === true) {
+    return { enabled: true, options: globalLogger };
+  }
+  if (input === false) {
+    return { enabled: false, options: globalLogger };
+  }
+  return { enabled: true, options: { ...globalLogger, ...input } };
+}
 
 // ─── Per-Proxy Defaults ────────────────────────────────────────
 
@@ -102,7 +108,7 @@ export function resolveConfig(options: PluginOptions): ResolvedConfig {
     );
   }
 
-  const logger = { ...LOGGER_DEFAULTS, ...options.logger };
+  const globalLogger = { ...LOGGER_DEFAULTS, ...options.logger };
   const defaults = options.defaults ?? {};
 
   const proxies: ResolvedProxyOptions[] = options.proxies.map((entry, i) => {
@@ -122,10 +128,11 @@ export function resolveConfig(options: PluginOptions): ResolvedConfig {
       pattern: entry.pattern,
       target: entry.target,
       cookieRewrite: resolveCookieRewrite(merged.cookieRewrite),
+      log: resolveProxyLog(merged.log, globalLogger),
     };
 
     return resolved;
   });
 
-  return { proxies, logger };
+  return { proxies, logger: globalLogger };
 }

@@ -1,11 +1,11 @@
 import type { Plugin, ResolvedConfig as ViteResolvedConfig } from "vite";
 import type { PluginOptions, ResolvedConfig } from "./types";
 import { resolveConfig } from "./config";
-import { createLogger, type LogLevel } from "./logger";
+import { createLogger } from "./logger";
 
 export function proxyEnhancer(options: PluginOptions): Plugin {
   const resolved: ResolvedConfig = resolveConfig(options);
-  const logger = createLogger(resolved.logger.level as LogLevel);
+  const logger = createLogger(resolved.logger);
 
   let viteConfig: ViteResolvedConfig;
 

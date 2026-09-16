@@ -1,12 +1,21 @@
 import type { ProxyOptions } from "vite";
+import type { CookieRewriteRule } from "./cookie";
 
 // ─── Logger ────────────────────────────────────────────────────
 
-export type LogLevel = "info" | "warn" | "error" | "silent";
+export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "silent";
 
 export interface LoggerOptions {
   /** Log level for plugin output. @default "info" */
   level?: LogLevel;
+  /** Enable/disable ANSI colors. Defaults to auto-detection. @default true */
+  color?: boolean;
+  /** Show request headers for proxied requests. @default false */
+  showRequestHeaders?: boolean;
+  /** Show response headers for proxied requests. @default false */
+  showResponseHeaders?: boolean;
+  /** Show the response body for proxied requests. @default false */
+  showBody?: boolean;
   /** Log matched proxy entries on request. @default false */
   logMatches?: boolean;
   /** Log cookie rewrite operations. @default false */
@@ -15,21 +24,13 @@ export interface LoggerOptions {
 
 // ─── Cookie Rewrite ────────────────────────────────────────────
 
-export interface CookieRewriteOptions {
-  /** Rewrite the domain attribute on cookies. @default false */
+export interface CookieRewriteOptions extends CookieRewriteRule {
+  /** Legacy shorthand: rewrite the Domain attribute. @default false */
   rewriteDomain?: boolean;
-  /** Custom domain to inject into cookies. When set, `rewriteDomain` is implied. */
-  domain?: string;
-  /** Add the Secure flag to cookies. @default false */
-  secure?: boolean;
-  /** Rewrite the path attribute on cookies. @default false */
+  /** Legacy shorthand: rewrite the Path attribute. @default false */
   rewritePath?: boolean;
-  /** Custom path to set on cookies. When set, `rewritePath` is implied. */
-  path?: string;
   /** Additional cookies to inject into every proxied response. @default {} */
   inject?: Record<string, string>;
-  /** Cookie names to skip during rewriting. @default [] */
-  exclude?: string[];
 }
 
 // ─── Proxy Entry ───────────────────────────────────────────────
@@ -52,6 +53,8 @@ export interface EnhancedProxyOptions {
   ) => void;
   /** Cookie rewriting configuration. Pass `true` to enable with defaults. */
   cookieRewrite?: CookieRewriteOptions | boolean;
+  /** Enable/disable logging for this rule, or override the global logger options. @default true */
+  log?: boolean | LoggerOptions;
 }
 
 // ─── Plugin Options ────────────────────────────────────────────
@@ -67,12 +70,18 @@ export interface PluginOptions {
 
 // ─── Internal / Resolved ───────────────────────────────────────
 
+export interface ResolvedProxyLog {
+  enabled: boolean;
+  options: Required<LoggerOptions>;
+}
+
 export type ResolvedProxyOptions = Required<
   Pick<EnhancedProxyOptions, "pattern" | "target">
 > &
   Omit<EnhancedProxyOptions, "pattern" | "target"> & {
     changeOrigin: boolean;
     secure: boolean;
+    log: ResolvedProxyLog;
   };
 
 export interface ResolvedConfig {
