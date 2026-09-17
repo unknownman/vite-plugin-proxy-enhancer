@@ -40,27 +40,50 @@ export function fakeProxyRes(headers: Headers, statusCode = 200): FakeProxyRes {
 }
 
 /**
+ * Run the plugin's `config()` hook with a given (already-merged) user config and
+ * return the config it contributes.
+ */
+export function runConfigHook(
+  options: PluginOptions,
+  userConfig: Record<string, unknown> = {},
+): { server: { proxy: Record<string, ProxyOptions> } } {
+  const plugin = proxyEnhancer(options);
+  const hook = plugin.config;
+  if (hook === undefined) throw new Error("plugin does not define a config hook");
+
+  const result =
+    typeof hook === "function"
+      ? (
+          hook as (config: unknown, env: unknown) => unknown
+        ).call(plugin, userConfig, { command: "serve", mode: "development" })
+      : hook;
+
+  return result as { server: { proxy: Record<string, ProxyOptions> } };
+}
+
+/**
+ * Run the plugin's `configResolved()` hook against the final resolved config.
+ */
+export function runConfigResolvedHook(
+  options: PluginOptions,
+  config: unknown,
+): void {
+  const plugin = proxyEnhancer(options);
+  const hook = plugin.configResolved;
+  if (hook === undefined) {
+    throw new Error("plugin does not define a configResolved hook");
+  }
+  (hook as (c: unknown) => void).call(plugin, config);
+}
+
+/**
  * Run the plugin's `config()` hook and return the `server.proxy` map it would give
  * Vite — i.e. the exact entries (with their `configure` hooks) used at runtime.
  */
 export function proxyEntries(
   options: PluginOptions,
 ): Record<string, ProxyOptions> {
-  const plugin = proxyEnhancer(options);
-  const hook = plugin.config;
-  if (hook === undefined) throw new Error("plugin does not define a config hook");
-
-  const resolved = (
-    typeof hook === "function"
-      ? (hook as (config: unknown, env: unknown) => unknown).call(
-          plugin,
-          {},
-          { command: "serve", mode: "development" },
-        )
-      : hook
-  ) as { server?: { proxy?: Record<string, ProxyOptions> } };
-
-  const proxy = resolved.server?.proxy;
+  const proxy = runConfigHook(options).server?.proxy;
   if (!proxy) throw new Error("plugin config did not provide server.proxy");
   return proxy;
 }

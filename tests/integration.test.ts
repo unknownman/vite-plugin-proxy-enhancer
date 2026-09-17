@@ -115,7 +115,14 @@ beforeAll(async () => {
     root: fileURLToPath(new URL("./fixtures/app", import.meta.url)),
     configFile: false,
     logLevel: "silent",
-    server: { port: 0, host: "localhost" },
+    server: {
+      port: 0,
+      host: "localhost",
+      // A hand-written proxy must keep working alongside the plugin's entries.
+      proxy: {
+        "/legacy": { target: `http://localhost:${backendPort}`, changeOrigin: true },
+      },
+    },
     plugins: [
       proxyEnhancer({
         logger: { level: "silent" },
@@ -166,5 +173,16 @@ describe("real Vite dev-server proxy", () => {
   it("proxies WebSocket upgrades", async () => {
     const response = await upgrade(vitePort, "/ws");
     expect(response).toContain("101 Switching Protocols");
+  });
+
+  it("coexists with a manually configured server.proxy entry", async () => {
+    const res = await get(vitePort, "/legacy");
+
+    expect(res.status).toBe(200);
+    // Not managed by the plugin, so its cookies pass through untouched.
+    expect(res.headers["set-cookie"]).toEqual([
+      "session=abc; Domain=api.example.com; Path=/api; SameSite=None",
+      "csrf=xyz; Domain=api.example.com; Path=/api",
+    ]);
   });
 });
