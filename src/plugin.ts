@@ -10,10 +10,11 @@ import { resolveConfig } from "./config";
 import { createLogger } from "./logger";
 import type { Logger, ProxyLogHandle } from "./logger";
 import {
-  rewriteSetCookieHeaders,
   serializeCookie,
-  splitSetCookieString,
   parseSetCookieString,
+  getSetCookieHeaderValues,
+  setSetCookieHeaderValues,
+  rewriteResponseSetCookies,
 } from "./cookie";
 
 /**
@@ -47,19 +48,13 @@ function injectCookies(
  * cookies were rewritten, injected, added, or passed through unchanged.
  */
 function logCookieRewrites(
-  input: string | string[] | undefined,
+  input: string[],
   output: string[],
   rule: CookieRewriteOptions,
   logger: Logger,
 ): void {
-  const sources =
-    input === undefined
-      ? []
-      : Array.isArray(input)
-        ? input
-        : splitSetCookieString(input);
   const originalByName = new Map<string, string>();
-  for (const raw of sources) {
+  for (const raw of input) {
     const parsed = parseSetCookieString(raw);
     if (parsed) originalByName.set(parsed.name, raw.trim());
   }
@@ -130,19 +125,21 @@ function attachProxyHandlers(
   if (reqs.cookieRewrite && cookieRule !== false) {
     proxy.on("proxyRes", (proxyRes, req) => {
       try {
-        const setCookie = proxyRes.headers["set-cookie"];
-        const rewritten =
-          setCookie === undefined
-            ? []
-            : rewriteSetCookieHeaders(setCookie, cookieRule);
-        // Rewritten cookies stay a `string[]`, one serialized header per cookie,
-        // so multiple Set-Cookie headers are never collapsed into one string.
+        // Set-Cookie CANNOT be folded into a comma-separated single header
+        // (RFC 6265 §4.1) — a browser would only store the first cookie, silently
+        // dropping the rest. Node/http-proxy forward it as an array, but anything
+        // that re-emits it as a string loses cookies (see vitejs/vite#23450).
+        // So: treat headers["set-cookie"] as an array end-to-end.
+        const before = getSetCookieHeaderValues(proxyRes.headers);
+        // Extract → rewrite each cookie individually → write back as `string[]`,
+        // guaranteeing one distinct Set-Cookie header per cookie.
+        const rewritten = rewriteResponseSetCookies(proxyRes.headers, cookieRule);
         const merged = injectCookies(cookieRule, rewritten);
-        if (merged.length > 0) {
-          proxyRes.headers["set-cookie"] = merged;
-        }
+        // Re-assign as a fresh array (never a joined string), so Node writes one
+        // "Set-Cookie:" line per element. Empty ⇒ header is removed entirely.
+        setSetCookieHeaderValues(proxyRes.headers, merged);
         if (logger && rule.log.options.logCookieRewrites) {
-          logCookieRewrites(setCookie, merged, cookieRule, logger);
+          logCookieRewrites(before, merged, cookieRule, logger);
         }
       } catch (error) {
         logger?.warn(

@@ -17,6 +17,9 @@ export {
   serializeCookie,
   rewriteCookie,
   rewriteSetCookieHeaders,
+  getSetCookieHeaderValues,
+  setSetCookieHeaderValues,
+  rewriteResponseSetCookies,
   getCookieAttribute,
   getCookiePrefix,
   stripCookiePrefix,
@@ -54,4 +57,5 @@ export type {
   CookiePrefixReport,
   ParsedCookie,
   SameSiteValue,
+  SetCookieHeaderContainer,
 } from "./cookie";

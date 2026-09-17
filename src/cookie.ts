@@ -642,3 +642,128 @@ export function rewriteSetCookieHeaders(
     return serializeSetCookie(rewriteCookie(cookie, rule));
   });
 }
+
+// ─── Set-Cookie ↔ Headers Object ───────────────────────────────
+//
+// Set-Cookie is the designated *exceptional* header of the HTTP spec:
+//
+// - RFC 6265 §4.1 says every cookie is carried in its own `Set-Cookie` header
+//   field, and a single field can never carry more than one cookie. It cannot be
+//   folded into a comma-separated list like other headers: the `Expires`
+//   attribute itself contains commas, and the cookie-value ABNF excludes the
+//   comma octet. A browser parsing a comma-joined value therefore treats
+//   everything after the first cookie as attributes of that cookie and silently
+//   **drops the rest** — breaking multi-cookie auth flows (session + CSRF token).
+// - Node.js honours this: `message.headers["set-cookie"]` is the one header kept
+//   as an array, and `response.setHeader("set-cookie", [...])` writes one
+//   `Set-Cookie:` line per array element. http-proxy's `writeHeaders` pass calls
+//   `res.setHeader(key, proxyRes.headers[key])` verbatim, so the instant the
+//   value is emitted as a comma-joined *string* the extra cookies are lost — see
+//   vitejs/vite#23450 ("server.proxy fetch() drops multiple Set-Cookie response
+//   headers") and mswjs/msw#640.
+//
+// To stay correct we therefore keep the header as a pure array end-to-end:
+// extract every value (string OR string[]), rewrite each cookie independently,
+// and write it back as a `string[]` — never a joined string.
+
+/**
+ * Shape of the response `headers` object of the Set-Cookie helpers below.
+ * Compatible with Node's `IncomingHttpHeaders` and the headers objects passed to
+ * Vite / http-proxy handlers.
+ */
+export interface SetCookieHeaderContainer {
+  [key: string]: string | string[] | undefined;
+}
+
+function isSetCookieKey(key: string): boolean {
+  return key.toLowerCase() === "set-cookie";
+}
+
+/**
+ * Extract every `Set-Cookie` value from a headers object, in on-the-wire order.
+ *
+ * Field names are case-insensitive (RFC 7230 §3.2), and a collapsed proxy may
+ * present them under any casing or as a single comma-joined string, so this reads
+ * all matching keys and normalizes each value — `string` or `string[]` — into a
+ * flat array of individual cookie header strings.
+ *
+ * @example
+ * getSetCookieHeaderValues({ "set-cookie": ["a=1", "b=2"] }) // => ["a=1", "b=2"]
+ * getSetCookieHeaderValues({ "Set-Cookie": "a=1, b=2" })     // => ["a=1", "b=2"]
+ *
+ * @param headers A raw response headers object.
+ * @returns One string per cookie (empty when none were set).
+ */
+export function getSetCookieHeaderValues(
+  headers: SetCookieHeaderContainer,
+): string[] {
+  const values: string[] = [];
+  for (const key of Object.keys(headers)) {
+    if (!isSetCookieKey(key)) continue;
+    const value = headers[key];
+    if (value === undefined) continue;
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      // Defensively split even array entries: if an upstream proxy already
+      // collapsed several cookies into one value, splitSetCookieString recovers
+      // them while respecting quoted values and Date segments.
+      values.push(...splitSetCookieString(entry));
+    }
+  }
+  return values;
+}
+
+/**
+ * Write cookie header strings back into a headers object as an array — never as a
+ * single comma-joined string.
+ *
+ * Any pre-existing `set-cookie` entries (any casing) are removed first so stale
+ * collapsed values can't leak through, then the value is assigned as a
+ * `string[]`. Node's `ServerResponse.setHeader("set-cookie", [...])` then emits
+ * one distinct `Set-Cookie` header per element, satisfying RFC 6265 §4.1. An
+ * empty array removes the header entirely.
+ *
+ * @param headers The headers object to mutate.
+ * @param values One serialized header string per cookie (from
+ *   {@link rewriteSetCookieHeaders} / {@link rewriteResponseSetCookies}).
+ */
+export function setSetCookieHeaderValues(
+  headers: SetCookieHeaderContainer,
+  values: string[],
+): void {
+  for (const key of Object.keys(headers)) {
+    if (isSetCookieKey(key)) delete headers[key];
+  }
+  if (values.length > 0) {
+    headers["set-cookie"] = values;
+  }
+}
+
+/**
+ * Rewrite every cookie in a response's headers object in place, preserving each
+ * one as a separate `Set-Cookie` header.
+ *
+ * This is the single entry point the proxy uses: it extracts all Set-Cookie
+ * values (regardless of `string`/`string[]`/casing), applies {@link
+ * rewriteSetCookieHeaders} — which parses and rewrites each cookie individually —
+ * and writes the result back as a proper array so Node emits multiple distinct
+ * headers. `CookieRewriteRule.exclude`-listed cookies pass through untouched.
+ *
+ * @example
+ * const headers = { "set-cookie": ["session=abc; Domain=api.example.com", "csrf=xyz; Path=/api"] };
+ * rewriteResponseSetCookies(headers, { rewriteDomain: true });
+ * // headers["set-cookie"] => ["session=abc", "csrf=xyz; Path=/api"]
+ *
+ * @param headers The raw response headers object (mutated in place).
+ * @param rule The rewrite rules applied to each cookie.
+ * @returns The final array of `Set-Cookie` header strings (one per cookie).
+ */
+export function rewriteResponseSetCookies(
+  headers: SetCookieHeaderContainer,
+  rule: CookieRewriteRule,
+): string[] {
+  const extracted = getSetCookieHeaderValues(headers);
+  const rewritten =
+    extracted.length > 0 ? rewriteSetCookieHeaders(extracted, rule) : [];
+  setSetCookieHeaderValues(headers, rewritten);
+  return rewritten;
+}

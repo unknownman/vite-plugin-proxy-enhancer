@@ -8,14 +8,14 @@ Proxying a backend through the Vite dev server is quick, but real requests hit r
 
 - **Auth cookies break.** Your API sets `Set-Cookie: session=abc; Domain=api.example.com; Path=/api`. The browser is on `localhost:5173`, the domain doesn't match, and the cookie is silently dropped — so the next request has no session. In a browser, this fails silently; in dev, it wastes hours.
 - **`sameSite` / `secure` fights.** A `SameSite=None` cookie *must* be `Secure`, `__Host-` cookies *must* set `Path=/` and no `Domain`. Backends often get this wrong, or the flags are valid for production but fatal for `http://localhost` — either way the cookie never sticks.
-- **Multiple `Set-Cookie` headers get mangled.** Proxies that treat `set-cookie` as a single string collapse several cookies into one invalid header. This plugin keeps each one separate.
+- **Multiple `Set-Cookie` headers get mangled.** Per [RFC 6265 §4.1](https://www.rfc-editor.org/rfc/rfc6265#section-4.1), each `Set-Cookie` must be its own header field — commas can't join them, and browsers silently keep only the first cookie from a joined value. Vite's proxy has upstream bugs here ([vitejs/vite#23450](https://github.com/vitejs/vite/issues/23450), [mswjs/msw#640](https://github.com/mswjs/msw/issues/640)). This plugin keeps every cookie as a separate header, end to end.
 - **You can't see what the proxy is doing.** Requests fail against the backend with no feedback from Vite's terse proxy errors.
 
 `vite-plugin-proxy-enhancer` fixes these by layering cookie rewriting and logging on top of Vite's own proxy middleware, one drop-in plugin.
 
 ## Features
 
-- 🍪 **Cookie rewriting** — rewrite or strip `Domain`, `Path`, `Secure`, `HttpOnly`, `SameSite`, and `__Host-`/`__Secure-` prefixes on proxied `Set-Cookie` responses, and inject extra cookies.
+- 🍪 **Cookie rewriting** — rewrite or strip `Domain`, `Path`, `Secure`, `HttpOnly`, `SameSite`, and `__Host-`/`__Secure-` prefixes on proxied `Set-Cookie` responses, inject extra cookies, and **always keep multiple `Set-Cookie` headers as separate header fields** (RFC 6265).
 - 🧩 **Global defaults** — shared settings for every rule, overridden per entry.
 - 🔧 **Full Vite compatibility** — every native `ProxyOptions` field (`rewrite`, `bypass`, `ws`, `headers`, `configure`, …) passes through untouched.
 - 🔌 **HTTP + WebSocket proxy** — normal requests and `ws:` upgrades both log correctly; `rewriteWsOrigin` is supported out of the box.
@@ -115,6 +115,17 @@ cookieRewrite: {
 ```
 
 `rewriteDomain` is a shorthand for `removeDomain: true`. If you need a *specific* domain instead, set `domain` explicitly.
+
+### 1b. Clear multiple auth cookies at once (logout)
+
+Logouts often expire both an access token and a refresh token in the same response. Those are two separate `Set-Cookie` headers that a naive proxy merges into one — and a browser keeps only the first, so the second cookie survives the logout. Because this plugin never joins `set-cookie`, both headers pass through (and get rewritten) independently:
+
+```ts
+// Backend sends: Set-Cookie: token=; Max-Age=0; Path=/; HttpOnly
+//                Set-Cookie: refreshToken=; Max-Age=0; Path=/; HttpOnly
+cookieRewrite: { path: "/" }
+// Blocked scope stays corrected and BOTH headers reach the browser separately.
+```
 
 ### 2. `SameSite` / `Secure` conflicts
 
@@ -268,6 +279,20 @@ PROXY_DEFAULTS   (changeOrigin: true, secure: true)
 
 - `cookieRewrite`: `undefined`/`false` → disabled · `true` → defaults · object → defaults + object.
 - `log`: `undefined`/`true` → enabled with global options · `false` → disabled · object → global + object.
+
+## Set-Cookie preservation
+
+`Set-Cookie` is the one header that must not be folded into a comma-separated list (RFC 6265 §4.1: `cookie-value` can't contain commas, `Expires` does, and browsers only honor the first cookie of a joined header — see [vitejs/vite#23450](https://github.com/vitejs/vite/issues/23450)). The plugin therefore treats it as an array at every step:
+
+1. **Extract** — `getSetCookieHeaderValues()` reads every `set-cookie` key (case-insensitive) and normalizes `string` / `string[]` / already-collapsed values into individual cookie strings.
+2. **Rewrite** — each cookie is parsed, rewritten, and re-serialized on its own by `rewriteSetCookieHeaders()`.
+3. **Write back** — `setSetCookieHeaderValues()` assigns a fresh `string[]`; Node's `ServerResponse` then emits one `Set-Cookie:` line per element, so the browser receives every cookie as a distinct header.
+
+These helpers are exported if you ever need them outside the plugin:
+
+```ts
+import { getSetCookieHeaderValues, rewriteResponseSetCookies } from "vite-plugin-proxy-enhancer";
+```
 
 ## Error handling
 
