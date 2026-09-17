@@ -83,6 +83,7 @@ function validateTarget(
 const COOKIE_DEFAULTS: CookieRewriteOptions = {
   rewriteDomain: false,
   rewritePath: false,
+  secure: false, // Smart default: strip Secure flag for local HTTP dev
   inject: {},
   exclude: [],
 };

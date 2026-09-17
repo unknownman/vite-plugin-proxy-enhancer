@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import zlib from "node:zlib";
 import type { Plugin, ProxyOptions, HttpProxy } from "vite";
 import type {
   PluginOptions,
@@ -15,6 +16,12 @@ import {
   injectResponseCookies,
   rewriteResponseSetCookies,
 } from "./cookie";
+
+/**
+ * Patterns for which we have already emitted the "Secure cookie on HTTP target"
+ * warning. Keyed by `rule.pattern` so the warning fires at most once per rule.
+ */
+const warnedSecureOnHttp = new Set<string>();
 
 /** Plugin name, surfaced by Vite and included in every diagnostic message. */
 const PLUGIN_NAME = "vite-plugin-proxy-enhancer";
@@ -155,6 +162,26 @@ function attachProxyHandlers(
         if (requestLogger && rule.log.options.logCookieRewrites) {
           logCookieRewrites(before, merged, cookieRule, requestLogger);
         }
+
+        // Warn (once per rule) when Secure cookies are about to be sent to
+        // the browser from an HTTP target. Browsers silently drop Secure
+        // cookies on non-HTTPS pages, which is extremely hard to diagnose.
+        const isHttpTarget = rule.target.startsWith("http:");
+        if (isHttpTarget && !warnedSecureOnHttp.has(rule.pattern)) {
+          const hasSecureCookie = merged.some((raw) => {
+            const p = parseSetCookieString(raw);
+            return p !== null && p.attributes.some((a) => a.name.toLowerCase() === "secure");
+          });
+          if (hasSecureCookie) {
+            warnedSecureOnHttp.add(rule.pattern);
+            fallbackLogger.warn(
+              `[${rule.pattern}] A Secure cookie is being sent from an HTTP target (${rule.target}). ` +
+                `Browsers silently drop Secure cookies on non-HTTPS origins, so the cookie will ` +
+                `never be stored. To fix this for local development, add: ` +
+                `cookieRewrite: { secure: false, sameSite: 'lax' }`,
+            );
+          }
+        }
       } catch (error) {
         warnLogger.warn(
           `cookie rewrite failed for ${describeRequest(rule, req)}: ${errorMessage(error)}`,
@@ -194,7 +221,11 @@ function attachProxyHandlers(
       pending.delete(req);
 
       const showBody = rule.log.options.showBody;
-      let body = "";
+      const MAX_BODY_SIZE = 16 * 1024; // 16 KB limit
+      const bodyBuffers: Buffer[] = [];
+      let bodySize = 0;
+      let bodyTruncated = false;
+
       let done = false;
       const finish = (response?: {
         statusCode: number;
@@ -213,14 +244,60 @@ function attachProxyHandlers(
 
       if (showBody) {
         proxyRes.on("data", (chunk: Buffer) => {
-          body += chunk.toString("utf8");
+          if (bodyTruncated) return;
+          bodySize += chunk.length;
+          if (bodySize > MAX_BODY_SIZE) {
+            bodyTruncated = true;
+            bodyBuffers.push(chunk.subarray(0, chunk.length - (bodySize - MAX_BODY_SIZE)));
+          } else {
+            bodyBuffers.push(chunk);
+          }
         });
       }
+
       proxyRes.on("end", () => {
+        let finalBodyStr: string | undefined = undefined;
+
+        if (showBody && bodyBuffers.length > 0) {
+          try {
+            let buf = Buffer.concat(bodyBuffers);
+            
+            // We only attempt to decode if we captured the entire body.
+            // If it's truncated, gzip/deflate decoding would fail with unexpected EOF anyway.
+            if (!bodyTruncated) {
+              const encoding = proxyRes.headers["content-encoding"];
+              if (encoding === "gzip") {
+                buf = zlib.gunzipSync(buf);
+              } else if (encoding === "deflate") {
+                buf = zlib.inflateSync(buf);
+              } else if (encoding === "br") {
+                buf = zlib.brotliDecompressSync(buf);
+              }
+            }
+
+            finalBodyStr = buf.toString("utf8");
+
+            const contentType = proxyRes.headers["content-type"] || "";
+            if (!bodyTruncated && contentType.includes("application/json")) {
+              try {
+                finalBodyStr = JSON.stringify(JSON.parse(finalBodyStr), null, 2);
+              } catch {
+                // Not valid JSON, keep as string
+              }
+            }
+
+            if (bodyTruncated) {
+              finalBodyStr += "\n... (body truncated to 16KB, skipped decompression)";
+            }
+          } catch (e) {
+            finalBodyStr = `(failed to decode body: ${errorMessage(e)})`;
+          }
+        }
+
         finish({
           statusCode: proxyRes.statusCode ?? 502,
           headers: proxyRes.headers,
-          body: showBody ? body : undefined,
+          body: finalBodyStr,
         });
       });
       if (typeof res?.on === "function") {

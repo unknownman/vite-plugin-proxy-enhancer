@@ -109,13 +109,27 @@ describe("domain, path, SameSite and flag rewriting", () => {
 
   it("adds and removes the Secure / HttpOnly flags", () => {
     expect(rewriteCookieString("s=1", { secure: true })).toBe("s=1; Secure");
+    // removeSecure actively strips the flag
     expect(rewriteCookieString("s=1; Secure", { removeSecure: true })).toBe("s=1");
+    // secure: false is equivalent to removeSecure — the smart default for HTTP dev
+    expect(rewriteCookieString("s=1; Secure", { secure: false })).toBe("s=1");
+    // If no Secure flag exists, secure: false is a no-op
+    expect(rewriteCookieString("s=1", { secure: false })).toBe("s=1");
     expect(rewriteCookieString("s=1", { httpOnly: true })).toBe("s=1; HttpOnly");
     expect(rewriteCookieString("s=1; HttpOnly", { removeHttpOnly: true })).toBe("s=1");
   });
 
-  it("forces Secure back on when SameSite=None", () => {
+  it("forces Secure back on when SameSite=None even if secure: false is set", () => {
+    // removeSecure cannot defeat the SameSite=None invariant
     expect(rewriteCookieString("s=1; SameSite=None; Secure", { removeSecure: true })).toBe(
+      "s=1; SameSite=None; Secure",
+    );
+    // secure: false cannot defeat the invariant either
+    expect(rewriteCookieString("s=1; SameSite=None; Secure", { secure: false })).toBe(
+      "s=1; SameSite=None; Secure",
+    );
+    // Setting sameSite=None adds Secure automatically, even with secure: false
+    expect(rewriteCookieString("s=1", { sameSite: "None", secure: false })).toBe(
       "s=1; SameSite=None; Secure",
     );
     expect(rewriteCookieString("s=1; SameSite=None", { sameSite: "None" })).toBe(

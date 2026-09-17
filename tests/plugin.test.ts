@@ -487,3 +487,189 @@ describe("plugin: fallback diagnostics", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"/api"'));
   });
 });
+
+// ─── 13. Body logging (buffering, truncation, json, gzip) ────────────────
+
+import zlib from "node:zlib";
+
+describe("plugin: body logging", () => {
+  it("buffers small JSON bodies and pretty-prints them", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "http://localhost:3001",
+          log: { showBody: true },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api"]);
+    const req = fakeRequest();
+    const res = fakeResponse();
+    const proxyRes = fakeProxyRes({ "content-type": "application/json" });
+
+    proxy.emit("proxyReq", { on() {} }, req, res);
+    proxy.emit("proxyRes", proxyRes, req, res);
+    
+    // Simulate a small JSON payload
+    proxyRes.emit("data", Buffer.from('{"hello":"world"}'));
+    proxyRes.emit("end");
+    
+    // The logger should pretty-print the JSON in the console.log output
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"hello": "world"'));
+  });
+
+  it("truncates bodies larger than 16KB and skips decompression", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "http://localhost:3001",
+          log: { showBody: true },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api"]);
+    const req = fakeRequest();
+    const res = fakeResponse();
+    const proxyRes = fakeProxyRes({ "content-type": "text/plain" });
+
+    proxy.emit("proxyReq", { on() {} }, req, res);
+    proxy.emit("proxyRes", proxyRes, req, res);
+    
+    // Send 20KB of data
+    const chunk = Buffer.alloc(20 * 1024, "a");
+    proxyRes.emit("data", chunk);
+    proxyRes.emit("end");
+    
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('more bytes'));
+    
+    // The logger itself truncates display to BODY_LIMIT (e.g. 2000 bytes).
+    // If it says "~14436 more bytes", that means the total string it received was ~16436 bytes
+    // (16384 bytes of 'a' + 52 bytes for our truncation message). This proves our 16KB limit worked!
+    const logOutput = logSpy.mock.calls[0][0];
+    expect(logOutput).toMatch(/… \d+ more bytes/);
+  });
+
+  it("decompresses gzipped bodies", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "http://localhost:3001",
+          log: { showBody: true },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api"]);
+    const req = fakeRequest();
+    const res = fakeResponse();
+    const proxyRes = fakeProxyRes({
+      "content-type": "application/json",
+      "content-encoding": "gzip",
+    });
+
+    proxy.emit("proxyReq", { on() {} }, req, res);
+    proxy.emit("proxyRes", proxyRes, req, res);
+    
+    // Gzipped JSON
+    const payload = Buffer.from('{"gzipped":true}');
+    const compressed = zlib.gzipSync(payload);
+    
+    proxyRes.emit("data", compressed);
+    proxyRes.emit("end");
+    
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"gzipped": true'));
+  });
+});
+
+// ─── 14. Secure cookie on HTTP target warning ──────────────────────────────
+
+describe("plugin: Secure cookie on HTTP target", () => {
+  it("warns once when a Secure cookie is proxied from an HTTP target", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          // Unique pattern so the module-level warnedSecureOnHttp cache doesn't
+          // short-circuit this test when other tests share the same /api pattern.
+          pattern: "/api-secure-warning-unique",
+          target: "http://localhost:3001",
+          cookieRewrite: { secure: true },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api-secure-warning-unique"]);
+    const req = fakeRequest();
+    const proxyRes = fakeProxyRes({ "set-cookie": ["session=abc; Secure"] });
+
+    proxy.emit("proxyRes", proxyRes, req, fakeResponse());
+    proxyRes.emit("end");
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Secure cookie is being sent from an HTTP target"),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("cookieRewrite: { secure: false, sameSite: 'lax' }"),
+    );
+  });
+
+  it("does NOT warn when target is HTTPS", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "https://api.example.com", // HTTPS target — no warning needed
+          cookieRewrite: { secure: true },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api"]);
+    const req = fakeRequest();
+    const proxyRes = fakeProxyRes({ "set-cookie": ["session=abc; Secure"] });
+
+    proxy.emit("proxyRes", proxyRes, req, fakeResponse());
+    proxyRes.emit("end");
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Secure cookie is being sent from an HTTP target"),
+    );
+  });
+
+  it("does NOT warn when secure: false (default) strips the Secure flag", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries = proxyEntries({
+      logger: { level: "info", color: false },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "http://localhost:3001",
+          // Default behavior: secure: false strips the Secure flag, so no warning
+          cookieRewrite: { secure: false },
+        },
+      ],
+    });
+    const proxy = configureEntry(entries["/api"]);
+    const req = fakeRequest();
+    const proxyRes = fakeProxyRes({ "set-cookie": ["session=abc; Secure; SameSite=Lax"] });
+
+    proxy.emit("proxyRes", proxyRes, req, fakeResponse());
+    proxyRes.emit("end");
+
+    // Secure was stripped by cookie rewriting — no warning
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Secure cookie is being sent from an HTTP target"),
+    );
+    // The cookie itself must have Secure stripped
+    expect(proxyRes.headers["set-cookie"]).toEqual(["session=abc; SameSite=Lax"]);
+  });
+});

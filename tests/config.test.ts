@@ -121,7 +121,7 @@ describe("configuration resolution", () => {
       resolveConfig({
         proxies: [{ pattern: "/api", target: "http://x.com", cookieRewrite: true }],
       }).proxies[0].cookieRewrite,
-    ).toEqual({ rewriteDomain: false, rewritePath: false, inject: {}, exclude: [] });
+    ).toEqual({ rewriteDomain: false, rewritePath: false, secure: false, inject: {}, exclude: [] });
 
     expect(resolveConfig(valid).proxies[0].cookieRewrite).toBe(false);
   });

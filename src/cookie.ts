@@ -697,7 +697,10 @@ export function rewriteCookie(
   }
 
   // Secure / HttpOnly flags.
-  if (rule.removeSecure) {
+  // `rule.secure === false` actively strips the flag (equivalent to `removeSecure`).
+  // This is the right default for local HTTP development where Secure cookies
+  // are dropped by the browser silently.
+  if (rule.removeSecure || rule.secure === false) {
     changed = setFlag(attributes, "Secure", "secure", false) || changed;
   }
   if (rule.secure === true) {
