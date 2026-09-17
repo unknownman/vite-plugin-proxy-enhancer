@@ -45,14 +45,15 @@ Type "clear"
 Enter
 Sleep 300ms
 
-# ─── 2. Write the config ─────────────────────────────────────────────────────
-Type "# Write vite.config.ts with our proxy config"
-Sleep 300ms
+# ─── 2. Write vite.config.ts in vim ─────────────────────────────────────────
+Type "vim vite.config.ts"
 Enter
-Sleep 200ms
+Sleep 1s
 
-Type "cat > vite.config.ts << 'EOF'"
-Enter
+# Enter insert mode
+Type "i"
+
+# Write the file content
 Type "import { defineConfig } from 'vite';"
 Enter
 Type "import { proxyEnhancer } from 'vite-plugin-proxy-enhancer';"
@@ -73,15 +74,15 @@ Type "        changeOrigin: true,"
 Enter
 Type "        cookieRewrite: {"
 Enter
-Type "          rewriteDomain: true,   // strip Domain=api.example.com → localhost"
+Type "          rewriteDomain: true,  // strip Domain=api.example.com"
 Enter
-Type "          path:          '/',    // broaden Path=/api → /"
+Type "          path:          '/',   // broaden Path=/api -> /"
 Enter
-Type "          secure:        false,  // drop Secure for plain http://localhost"
+Type "          secure:        false, // no Secure over http://localhost"
 Enter
-Type "          sameSite:      'lax',  // override SameSite=None (needs Secure)"
+Type "          sameSite:      'lax', // replace SameSite=None"
 Enter
-Type "          inject: { 'x-debug': 'on' }, // inject debug cookie"
+Type "          inject: { 'x-debug': 'on' },"
 Enter
 Type "        },"
 Enter
@@ -90,36 +91,22 @@ Enter
 Enter
 Type "      logger: {"
 Enter
-Type "        level:             'info',"
+Type "        level:               'info',"
 Enter
-Type "        logCookieRewrites: true,   // show cookie diff per request"
+Type "        logCookieRewrites:   true,"
 Enter
-Type "        showResponseHeaders: true, // show Set-Cookie in logs"
+Type "        showResponseHeaders: true,"
 Enter
-Type "        logMatches: true,"
+Type "        logMatches:          true,"
 Enter
 Type "      },"
 Enter
 Enter
 Type "      proxies: ["
 Enter
-Type "        {"
+Type "        { pattern: '/api',         target: 'http://localhost:3001' },"
 Enter
-Type "          pattern: '/api',                    // /api/** → backend"
-Enter
-Type "          target:  'http://localhost:3001',"
-Enter
-Type "        },"
-Enter
-Type "        {"
-Enter
-Type "          pattern: '/api/health',             // health check — silent"
-Enter
-Type "          target:  'http://localhost:3001',"
-Enter
-Type "          log:     false,"
-Enter
-Type "        },"
+Type "        { pattern: '/api/health',  target: 'http://localhost:3001', log: false },"
 Enter
 Type "      ],"
 Enter
@@ -128,68 +115,80 @@ Enter
 Type "  ],"
 Enter
 Type "});"
+
+# Save and quit
+Escape
+Sleep 300ms
+Type ":wq"
 Enter
-Type "EOF"
+Sleep 800ms
+
+# ─── 3. Show the config with syntax highlighting ──────────────────────────────
+Type "# View the result"
+Enter
+Sleep 300ms
+Type "vim -R vite.config.ts"
+Enter
+Sleep 2s
+
+# Scroll slowly so the viewer can read it
+Type "G"
+Sleep 1s
+Type "gg"
+Sleep 2500ms
+
+# Quit
+Type ":q"
+Enter
+Sleep 300ms
+Type "clear"
+Enter
+Sleep 300ms
+
+# ─── 4. Write backend.mjs in vim ─────────────────────────────────────────────
+Type "# Create a mock backend that sends 3 misbehaving cookies"
+Enter
+Sleep 400ms
+Type "vim backend.mjs"
 Enter
 Sleep 1s
 
-Type "echo '✓ vite.config.ts written'"
-Enter
-Sleep 500ms
-Type "clear"
-Enter
-Sleep 300ms
+Type "i"
 
-# ─── 3. Show the config ──────────────────────────────────────────────────────
-Type "cat vite.config.ts"
-Enter
-Sleep 4s
-Type "clear"
-Enter
-Sleep 300ms
-
-# ─── 4. Start the mock backend ───────────────────────────────────────────────
-Type "# Start the mock backend that returns production-style cookies"
-Enter
-Sleep 300ms
-
-Type "cat > backend.mjs << 'EOF'"
-Enter
 Type "import { createServer } from 'node:http';"
 Enter
-Type "const s = createServer((req, res) => {"
+Enter
+Type "createServer((req, res) => {"
 Enter
 Type "  if (req.url === '/api/login') {"
 Enter
-Type "    // Production cookies — Domain + SameSite=None intentionally misbehave on localhost"
+Type "    // 3 cookies — Domain + SameSite=None break on localhost"
 Enter
 Type "    res.setHeader('Set-Cookie', ["
 Enter
-Type "      'session=abc123; Domain=api.example.com; Path=/api; HttpOnly; SameSite=None',"
+Type "      'session=abc; Domain=api.example.com; Path=/api; HttpOnly; SameSite=None',"
 Enter
-Type "      'csrf=xyz789; Domain=api.example.com; Path=/api',"
+Type "      'csrf=xyz;   Domain=api.example.com; Path=/api',"
 Enter
-Type "      'refresh=tok999; Domain=api.example.com; Path=/api; HttpOnly',"
+Type "      'refresh=r;  Domain=api.example.com; Path=/api; HttpOnly',"
 Enter
 Type "    ]);"
 Enter
 Type "    res.writeHead(200, { 'content-type': 'application/json' });"
 Enter
-Type "    return res.end(JSON.stringify({ ok: true, user: 'alice' }));"
+Type "    return res.end(JSON.stringify({ ok: true }));"
 Enter
 Type "  }"
 Enter
-Type "  res.writeHead(200, { 'content-type': 'application/json' });"
+Type "  res.writeHead(404).end();"
 Enter
-Type "  res.end(JSON.stringify({ ok: true }));"
+Type "}).listen(3001, () => console.log('Backend: http://localhost:3001'));"
+
+Escape
+Sleep 300ms
+Type ":wq"
 Enter
-Type "});"
-Enter
-Type "s.listen(3001, () => console.log('Backend: http://localhost:3001'));"
-Enter
-Type "EOF"
-Enter
-Sleep 500ms
+Sleep 800ms
 
 Type "node backend.mjs &"
 Enter
