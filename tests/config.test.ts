@@ -52,12 +52,40 @@ describe("configuration validation", () => {
     expect(() =>
       resolveConfig({ proxies: [{ pattern: "/api", target: "ftp://x.com" }] } as never),
     ).toThrow(/uses protocol "ftp:"/);
+    expect(() =>
+      resolveConfig({ proxies: [{ pattern: "/api", target: "ws://x.com" }] } as never),
+    ).toThrow(/set `ws: true`/);
   });
 
   it("rejects a non-object defaults option", () => {
     expect(() => resolveConfig({ ...valid, defaults: 3 } as never)).toThrow(
       /"defaults" must be an object of proxy defaults, got number/,
     );
+    expect(() => resolveConfig({ ...valid, defaults: [] } as never)).toThrow(
+      /"defaults" must be an object of proxy defaults, got array/,
+    );
+  });
+
+  it("rejects a non-object logger option", () => {
+    expect(() => resolveConfig({ ...valid, logger: "info" } as never)).toThrow(
+      /"logger" must be an object of logger options, got string/,
+    );
+    expect(() => resolveConfig({ ...valid, logger: [] } as never)).toThrow(
+      /"logger" must be an object of logger options, got array/,
+    );
+  });
+
+  it("rejects invalid cookieRewrite / log value types", () => {
+    expect(() =>
+      resolveConfig({
+        proxies: [{ pattern: "/api", target: "http://x.com", cookieRewrite: "yes" }],
+      } as never),
+    ).toThrow(/proxy\[0\]\.cookieRewrite must be a boolean or an object, got string/);
+    expect(() =>
+      resolveConfig({
+        proxies: [{ pattern: "/api", target: "http://x.com", log: 1 }],
+      } as never),
+    ).toThrow(/proxy\[0\]\.log must be a boolean or an object, got number/);
   });
 
   it("prefixes every error with [proxy-enhancer] for greppability", () => {
@@ -109,6 +137,55 @@ describe("configuration resolution", () => {
       inject: {},
       exclude: [],
     });
+  });
+
+  it("deep-merges nested cookieRewrite from defaults with per-entry options", () => {
+    const [rule] = resolveConfig({
+      defaults: { cookieRewrite: { rewriteDomain: true, path: "/" } },
+      proxies: [
+        {
+          pattern: "/api",
+          target: "http://x.com",
+          cookieRewrite: { sameSite: "Lax", inject: { debug: "1" } },
+        },
+      ],
+    }).proxies;
+
+    expect(rule.cookieRewrite).toMatchObject({
+      rewriteDomain: true, // kept from defaults
+      path: "/", // kept from defaults
+      sameSite: "Lax", // added per entry
+      inject: { debug: "1" },
+    });
+  });
+
+  it("lets an entry disable cookieRewrite set in defaults", () => {
+    const [rule] = resolveConfig({
+      defaults: { cookieRewrite: true },
+      proxies: [{ pattern: "/api", target: "http://x.com", cookieRewrite: false }],
+    }).proxies;
+
+    expect(rule.cookieRewrite).toBe(false);
+  });
+
+  it("deep-merges nested log options from defaults with per-entry options", () => {
+    const [rule] = resolveConfig({
+      defaults: { log: { showBody: true } },
+      proxies: [{ pattern: "/api", target: "http://x.com", log: { level: "debug" } }],
+    }).proxies;
+
+    expect(rule.log.enabled).toBe(true);
+    expect(rule.log.options.showBody).toBe(true); // kept from defaults
+    expect(rule.log.options.level).toBe("debug"); // added per entry
+  });
+
+  it("lets an entry disable logging set in defaults", () => {
+    const [rule] = resolveConfig({
+      defaults: { log: { showBody: true } },
+      proxies: [{ pattern: "/api", target: "http://x.com", log: false }],
+    }).proxies;
+
+    expect(rule.log.enabled).toBe(false);
   });
 
   it("resolves log flags and per-entry overrides", () => {

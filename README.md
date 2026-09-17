@@ -66,7 +66,7 @@ export default defineConfig({
     proxyEnhancer({
       proxies: [
         {
-          pattern: "/api/**",              // matched like Vite's server.proxy
+          pattern: "/api",                 // matched like Vite's server.proxy (path prefix)
           target: "http://localhost:3001", // backend during local development
           cookieRewrite: true,             // enable cookie rewriting
         },
@@ -84,6 +84,8 @@ Requests to `/api/...` are forwarded to `http://localhost:3001`, cookies are rew
 ```
 
 That's it — no `server.proxy` block required.
+
+> **Try it locally:** the [`example/`](./example) folder is a runnable demo (mock API + WebSocket + the plugin config) covering cookie rewriting, cookie injection, per-route logging, and `ws: true`. See [`example/README.md`](./example/README.md) to run it.
 
 ---
 
@@ -238,7 +240,7 @@ proxyEnhancer({
       log: false,
     },
     {
-      pattern: "/api/**",                // everything else is logged
+      pattern: "/api",                   // everything else is logged
       target: "http://localhost:3001",
     },
   ],
@@ -260,7 +262,8 @@ proxyEnhancer({ logger: { level: "silent" }, proxies: [...] });
 ### 5. Proxy WebSockets
 
 ```ts
-{ pattern: "/ws", target: "ws://localhost:3002", ws: true }
+// Use an http(s) target plus `ws: true` — the upgrade is forwarded transparently.
+{ pattern: "/ws", target: "http://localhost:3002", ws: true }
 ```
 
 Upgrades are logged with their `101` status. `rewriteWsOrigin` passes through if your backend validates the `Origin` header during the handshake.
@@ -324,7 +327,7 @@ proxyEnhancer(options);
 import type { EnhancedProxyOptions } from "vite-plugin-proxy-enhancer";
 
 const rule: EnhancedProxyOptions = {
-  pattern: "/api/**",              // required
+  pattern: "/api",                 // required
   target: "https://api.example.com", // required
   cookieRewrite: {                 // plugin
     rewriteDomain: true,
@@ -346,7 +349,7 @@ const rule: EnhancedProxyOptions = {
 
 | Option           | Type                                | Default | Description                                                                 |
 | ---------------- | ----------------------------------- | ------- | --------------------------------------------------------------------------- |
-| `pattern`        | `string`                            | —       | Route to match: `"/api"`, glob `"/api/**"`, or RegExp source when prefixed with `^` (`"^/api/.*"`). Must start with `/` or `^`. |
+| `pattern`        | `string`                            | —       | Route to match, exactly like Vite's `server.proxy`: a path prefix such as `"/api"` (matches `/api`, `/api/`, `/api/users`, and also `/api-docs`), or a RegExp source when prefixed with `^` (`"^/api/.*"`, `"^/api(/|$)"`). Must start with `/` or `^`. |
 | `target`         | `string`                            | —       | Target server, e.g. `"http://localhost:3001"` or `"https://api.example.com"`. Only `http:` / `https:` are supported. |
 | `cookieRewrite`  | `CookieRewriteOptions \| boolean`   | `false` | Rewrite/inject cookies. `true` = defaults; object = options; `false` = off. |
 | `log`            | `boolean \| LoggerOptions`          | `true`  | Per-rule logging. `false` disables; object overrides the global `logger`.   |
@@ -490,13 +493,14 @@ proxyEnhancer({
 
 ### "My requests aren't being proxied at all" (404 / served by Vite)
 
-- The `pattern` must start with `/` (path/glob) or `^` (RegExp). `"api"` will never match — the plugin throws at startup:
+- The `pattern` must start with `/` (path prefix) or `^` (RegExp). `"api"` will never match — the plugin throws at startup:
 
   ```
   [proxy-enhancer] Invalid configuration: proxy[0].pattern "api" will never match a request. ...
   ```
+- Matching is the same as Vite's `server.proxy`: a plain string is a **prefix**, not a glob. `"/api"` matches `/api/users` (and also `/api-docs`); `"/api/**"` would only match a URL literally starting with `/api/**`. For an exact segment boundary use a RegExp: `"^/api(/|$)"`.
+- The rules are checked in order and the first match wins, so put the most specific patterns first (e.g. `/api/health` before `/api`).
 - Use `logMatches: true` to confirm which rule (if any) matched. If no request line appears, nothing matched.
-- A more specific pattern wins in Vite's matching order; a broad `pattern: "/"` would swallow everything else.
 
 ### `ECONNREFUSED` / `502` from the proxy
 

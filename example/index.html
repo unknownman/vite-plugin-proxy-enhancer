@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proxy Enhancer Example</title>
+  </head>
+  <body>
+    <h1>vite-plugin-proxy-enhancer Example</h1>
+    <p>Check the Vite terminal output to see the granular proxy logging in action!</p>
+    
+    <div style="display: flex; gap: 1rem;">
+      <button id="btn-api">Test HTTP Proxy (/api/users/1)</button>
+      <button id="btn-ws">Test WS Proxy (/ws)</button>
+    </div>
+
+    <pre id="output" style="background: #f4f4f4; padding: 1rem; margin-top: 1rem; border-radius: 4px; overflow-x: auto;"></pre>
+
+    <script>
+      const output = document.getElementById('output');
+      const log = (msg) => {
+        output.textContent += msg + '\n';
+      };
+
+      document.getElementById('btn-api').addEventListener('click', async () => {
+        log('Fetching /api/users/1 ...');
+        try {
+          const res = await fetch('/api/users/1');
+          const data = await res.json();
+          log('Success: ' + JSON.stringify(data, null, 2));
+        } catch (err) {
+          log('Error: ' + err.message);
+        }
+      });
+
+      document.getElementById('btn-ws').addEventListener('click', () => {
+        log('Connecting to WebSocket /ws ...');
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        
+        ws.onopen = () => {
+          log('WebSocket connected. Sending message...');
+          ws.send('Hello from vite-plugin-proxy-enhancer!');
+        };
+        
+        ws.onmessage = (event) => {
+          log('WebSocket received: ' + event.data);
+          ws.close();
+        };
+        
+        ws.onerror = () => log('WebSocket error');
+        ws.onclose = () => log('WebSocket closed');
+      });
+    </script>
+  </body>
+</html>

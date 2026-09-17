@@ -117,7 +117,7 @@ export interface CookieRewriteOptions extends CookieRewriteRule {
  *
  * @example
  * const rule: EnhancedProxyOptions = {
- *   pattern: "/api/**",
+ *   pattern: "/api",
  *   target: "https://api.example.com",
  *   cookieRewrite: { rewriteDomain: true, path: "/" },
  *   log: { level: "debug" },
@@ -128,14 +128,16 @@ export interface CookieRewriteOptions extends CookieRewriteRule {
  */
 export interface EnhancedProxyOptions extends Omit<ProxyOptions, "target"> {
   /**
-   * Route to match, evaluated against the request URL path (like Vite's
-   * `server.proxy`).
+   * Route to match, evaluated against the request URL path using the same rules
+   * as Vite's `server.proxy`.
    *
-   * - Plain prefix / glob: `"/api"`, `"/api/**"`
-   * - RegExp source when prefixed with `^`: `"^/api/.*"`
+   * - Path prefix (plain string): `"/api"` matches `/api`, `/api/`, and
+   *   `/api/users`.
+   * - RegExp source when prefixed with `^`: `"^/api(/|$)"` or `"^/api/.*"`.
    *
-   * Must start with `/` or `^`, otherwise it can never match and the plugin
-   * throws at startup.
+   * Note this is a prefix, not a glob — `"/api/**"` would only match URLs that
+   * literally start with `/api/**`. Must start with `/` or `^`, otherwise it can
+   * never match and the plugin throws at startup.
    */
   pattern: string;
   /**
@@ -176,8 +178,8 @@ export interface EnhancedProxyOptions extends Omit<ProxyOptions, "target"> {
  *   defaults: { changeOrigin: true, cookieRewrite: true },
  *   logger: { level: "info", logMatches: true },
  *   proxies: [
- *     { pattern: "/api/**", target: "http://localhost:3001" },
- *     { pattern: "/ws", target: "ws://localhost:3002", ws: true, log: false },
+ *     { pattern: "/api", target: "http://localhost:3001" },
+ *     { pattern: "/ws", target: "http://localhost:3002", ws: true, log: false },
  *   ],
  * });
  */

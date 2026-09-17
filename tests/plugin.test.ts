@@ -247,7 +247,7 @@ describe("integration: simulated proxyRes lifecycle", () => {
       logger: { level: "silent" },
       proxies: [
         {
-          pattern: "/api/**",
+          pattern: "/api",
           target: "http://localhost:3001",
           cookieRewrite: {
             rewriteDomain: true,
@@ -258,7 +258,7 @@ describe("integration: simulated proxyRes lifecycle", () => {
         },
       ],
     });
-    const proxy = configureEntry(entries["/api/**"]);
+    const proxy = configureEntry(entries["/api"]);
     const proxyRes = fakeProxyRes({
       "content-type": "application/json",
       "set-cookie": [

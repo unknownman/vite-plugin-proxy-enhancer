@@ -8,6 +8,7 @@ import type {
   ResolvedConfig,
 } from "./types";
 import { LOGGER_DEFAULTS } from "./logger";
+import { isObject } from "./utils";
 
 // ─── Validation ────────────────────────────────────────────────
 
@@ -30,14 +31,15 @@ function validatePattern(
   if (pattern === "") {
     throwConfigError(`proxy[${index}].pattern must not be empty`);
   }
-  // Vite matches proxies against the request URL path: a leading "/" enables glob
-  // matching ("/api/**"), a leading "^" enables a RegExp ("^/api/.*"). Anything
-  // else can never match, so fail early instead of silently proxying nothing.
+  // Vite matches proxies against the request URL path: a leading "/" enables
+  // prefix matching ("/api" matches "/api/users"), a leading "^" enables a RegExp
+  // ("^/api/.*"). Anything else can never match, so fail early instead of
+  // silently proxying nothing.
   if (!pattern.startsWith("/") && !pattern.startsWith("^")) {
     throwConfigError(
       `proxy[${index}].pattern "${pattern}" will never match a request. ` +
         'Patterns are matched against URL paths, so they must start with "/" ' +
-        '(e.g. "/api" or "/api/**") or "^" for a RegExp (e.g. "^/api/.*").',
+        '(a path prefix, e.g. "/api") or "^" for a RegExp (e.g. "^/api/.*").',
     );
   }
   return true;
@@ -68,7 +70,9 @@ function validateTarget(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throwConfigError(
       `proxy[${index}].target "${target}" uses protocol "${parsed.protocol}", ` +
-        'which http-proxy cannot forward to. Only "http:" and "https:" targets are supported.',
+        'which http-proxy cannot forward to. Only "http:" and "https:" targets ' +
+        'are supported. To proxy WebSocket traffic, point target at an http(s) URL ' +
+        "and set `ws: true` on the rule.",
     );
   }
   return true;
@@ -85,23 +89,75 @@ const COOKIE_DEFAULTS: CookieRewriteOptions = {
 
 function resolveCookieRewrite(
   input: CookieRewriteOptions | boolean | undefined,
+  index: number,
 ): CookieRewriteOptions | false {
   if (input === undefined || input === false) return false;
   if (input === true) return { ...COOKIE_DEFAULTS };
+  if (!isObject(input)) {
+    throwConfigError(
+      `proxy[${index}].cookieRewrite must be a boolean or an object, got ` +
+        typeof input,
+    );
+  }
   return { ...COOKIE_DEFAULTS, ...input };
 }
 
 // ─── Logger Resolution ─────────────────────────────────────────
 
+/**
+ * Merge plugin-level `defaults.cookieRewrite` with a rule's own `cookieRewrite`.
+ *
+ * These are nested objects, so a plain top-level spread would let an entry that
+ * only adds `sameSite` silently discard a default `rewriteDomain`/`path`. Rules:
+ * an explicit `false`/`true` on the entry wins; otherwise objects are merged
+ * key-by-key (`inject` maps are combined, `exclude` is replaced when provided).
+ */
+function mergeCookieRewrite(
+  base: CookieRewriteOptions | boolean | undefined,
+  override: CookieRewriteOptions | boolean | undefined,
+): CookieRewriteOptions | boolean | undefined {
+  if (override === undefined) return base;
+  if (override === false || override === true) return override;
+  if (base === undefined || typeof base === "boolean") return override;
+  return {
+    ...base,
+    ...override,
+    inject: { ...base.inject, ...override.inject },
+    exclude: override.exclude ?? base.exclude,
+  };
+}
+
+/**
+ * Merge plugin-level `defaults.log` with a rule's own `log`.
+ *
+ * Nested option objects are merged key-by-key; a boolean on the entry wins
+ * outright (`false` disables, `true` re-enables with the global options).
+ */
+function mergeLog(
+  base: boolean | LoggerOptions | undefined,
+  override: boolean | LoggerOptions | undefined,
+): boolean | LoggerOptions | undefined {
+  if (override === undefined) return base;
+  if (typeof override === "boolean") return override;
+  if (base === undefined || typeof base === "boolean") return override;
+  return { ...base, ...override };
+}
+
 function resolveProxyLog(
   input: boolean | LoggerOptions | undefined,
   globalLogger: Required<LoggerOptions>,
+  index: number,
 ): ResolvedProxyLog {
   if (input === undefined || input === true) {
     return { enabled: true, options: globalLogger };
   }
   if (input === false) {
     return { enabled: false, options: globalLogger };
+  }
+  if (!isObject(input)) {
+    throwConfigError(
+      `proxy[${index}].log must be a boolean or an object, got ` + typeof input,
+    );
   }
   return { enabled: true, options: { ...globalLogger, ...input } };
 }
@@ -150,10 +206,17 @@ export function resolveConfig(options: PluginOptions): ResolvedConfig {
     );
   }
 
-  if (options.defaults !== undefined && typeof options.defaults !== "object") {
+  if (options.defaults !== undefined && !isObject(options.defaults)) {
     throwConfigError(
       '"defaults" must be an object of proxy defaults, got ' +
-        typeof options.defaults,
+        (Array.isArray(options.defaults) ? "array" : typeof options.defaults),
+    );
+  }
+
+  if (options.logger !== undefined && !isObject(options.logger)) {
+    throwConfigError(
+      '"logger" must be an object of logger options, got ' +
+        (Array.isArray(options.logger) ? "array" : typeof options.logger),
     );
   }
 
@@ -178,8 +241,11 @@ export function resolveConfig(options: PluginOptions): ResolvedConfig {
       ...merged,
       pattern: entry.pattern,
       target: entry.target,
-      cookieRewrite: resolveCookieRewrite(merged.cookieRewrite),
-      log: resolveProxyLog(merged.log, globalLogger),
+      cookieRewrite: resolveCookieRewrite(
+        mergeCookieRewrite(defaults.cookieRewrite, entry.cookieRewrite),
+        i,
+      ),
+      log: resolveProxyLog(mergeLog(defaults.log, entry.log), globalLogger, i),
     };
 
     return resolved;

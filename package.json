@@ -1,7 +1,7 @@
 {
   "name": "vite-plugin-proxy-enhancer",
   "version": "0.1.0",
-  "description": "Enhance the Vite dev server proxy with cookie rewriting, RFC 6265-safe multiple Set-Cookie handling, per-proxy defaults, WebSocket support, and granular request logging.",
+  "description": "A powerful Vite plugin that enhances the dev server proxy with cookie rewriting (Domain/Path/Secure/SameSite), proper multiple Set-Cookie handling, per-proxy defaults, WebSocket logging, and granular request monitoring.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -16,7 +16,8 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -40,8 +41,12 @@
     "dev-server",
     "http-proxy",
     "cookie",
-    "middleware",
-    "rewrite"
+    "cookie-rewrite",
+    "set-cookie",
+    "samesite",
+    "cors",
+    "websocket",
+    "logging"
   ],
   "license": "MIT",
   "publishConfig": {

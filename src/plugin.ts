@@ -351,7 +351,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * @example
  * proxyEnhancer({
  *   defaults: { changeOrigin: true, cookieRewrite: true },
- *   proxies: [{ pattern: "/api/**", target: "http://localhost:3001" }],
+ *   proxies: [{ pattern: "/api", target: "http://localhost:3001" }],
  * })
  *
  * @param options Plugin options ({@link PluginOptions}).
