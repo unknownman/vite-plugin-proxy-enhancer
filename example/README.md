@@ -1,55 +1,72 @@
-# Example
+# Example — vite-plugin-proxy-enhancer
 
-A minimal, dependency-free demo of the most important `vite-plugin-proxy-enhancer`
-features:
+A fully runnable, dependency-free demonstration of the plugin's core value:
+fixing cookies that would silently break on `http://localhost`.
 
-- rewriting `Domain` / `Path` / `SameSite` so cookies survive on `localhost`
-- preserving multiple `Set-Cookie` headers from one response
-- injecting a debug cookie into every proxied response
-- excluding specific cookies from rewriting
-- disabling logging for a single route
-- proxying WebSocket upgrades (`ws: true`)
-- coexisting with a hand-written `server.proxy` entry
+## What this example shows
+
+| Feature | Route |
+|---|---|
+| 3 misbehaving production cookies fixed for localhost | `POST /api/login` |
+| Cookie round-trip (session forwarded back to backend) | `GET /api/me` |
+| Cookie injection (`x-debug=on` added to every response) | `GET /api/users` |
+| Logging silenced for a specific route | `GET /api/health` |
+| Hand-written `server.proxy` entry coexisting with the plugin | `GET /legacy` |
+| WebSocket proxying (`ws: true`) | `WS /ws` |
 
 ## Run it
 
-From the repository root:
+From the **repository root**:
 
 ```bash
-# 1. Install and build the plugin (this example imports the built package).
+# 1. Install and build the plugin
 npm install
 npm run build
 
 # 2. Start the mock backend (terminal 1)
 node example/mock-api.mjs
 
-# 3. Start the Vite dev server (terminal 2)
+# 3. Start Vite (terminal 2)
 npx vite --config example/vite.config.ts
+
+# 4. Open http://localhost:5173
 ```
 
-Then open <http://localhost:5173> and open the browser devtools:
+## What to look for
 
-- **GET `/api/login`** — the backend sets two cookies scoped to
-  `Domain=api.example.com` with `SameSite=None`. Watch the Network tab: the proxy
-  rewrites them to be valid on `localhost` and keeps both `Set-Cookie` headers
-  separate.
-- **GET `/api/users`** — logged normally; a `debug=1` cookie is injected.
-- **GET `/api/health`** — works but is **not** logged (`log: false`).
-- **GET `/legacy`** — served by the hand-written `server.proxy` entry, untouched.
-- **WebSocket `/ws`** — completes the upgrade through the proxy.
+### In the browser (DevTools → Application → Cookies)
 
-The Vite terminal prints each request with the matched pattern, status, timing,
-target, and a cookie-rewrite summary:
+1. Click **POST /api/login** — you should see three distinct cookies stored for
+   `localhost`:
+   - `session` — `Path=/`, no Domain, SameSite=Lax, no Secure
+   - `csrf` — same
+   - `refresh` — same
+   - `x-debug=on` — injected by the plugin
+
+   Without the plugin these would either be stored for `api.example.com` (wrong
+   domain, rejected) or merged into a single broken `Set-Cookie` value.
+
+2. Click **GET /api/me** — returns 200 because `session` was properly stored and
+   the browser sent it back.
+
+3. Click **GET /api/users** — check that `x-debug=on` appears in cookies.
+
+### In the Vite terminal
 
 ```
-  [09:41:14] GET /api/login (/api) → 200 OK 12.4ms ⇢ http://localhost:3001
-  [09:41:14] INFO     cookies rewritten: session, csrf
+[09:41:14] INFO  Configuring 3 proxy entries
+[09:41:14] GET /api/login (/api) → 200 OK 12ms ⇢ http://localhost:3001
+             cookies rewritten: session, csrf, refresh
+             cookies injected:  x-debug
 ```
+
+Health checks (`/api/health`) are silent because the rule sets `log: false`.
 
 ## Files
 
-| File             | Purpose                                                        |
-| ---------------- | -------------------------------------------------------------- |
-| `vite.config.ts` | Plugin configuration with `defaults`, per-rule options, `ws`.  |
-| `mock-api.mjs`   | Node-only mock API that sets misbehaving cookies + WS upgrades. |
-| `index.html`     | Demo page that calls each route and shows cookies.             |
+| File | Purpose |
+|---|---|
+| `vite.config.ts` | Plugin configuration with defaults, logging, and per-rule options |
+| `mock-api.mjs` | Node.js mock backend — sets production-style misbehaving cookies |
+| `index.html` | Interactive demo page |
+| `package.json` | References the local plugin build via `file:..` |

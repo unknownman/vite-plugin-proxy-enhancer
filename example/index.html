@@ -3,52 +3,430 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Proxy Enhancer Example</title>
+    <title>vite-plugin-proxy-enhancer — Live Demo</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        --bg:       #1e1e2e;
+        --surface:  #313244;
+        --overlay:  #45475a;
+        --text:     #cdd6f4;
+        --subtext:  #a6adc8;
+        --blue:     #89b4fa;
+        --green:    #a6e3a1;
+        --red:      #f38ba8;
+        --yellow:   #f9e2af;
+        --peach:    #fab387;
+        --mauve:    #cba6f7;
+        --teal:     #94e2d5;
+        --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        min-height: 100dvh;
+        padding: 2rem 1rem;
+      }
+
+      h1 {
+        font-size: clamp(1.4rem, 3vw, 2rem);
+        font-weight: 700;
+        color: var(--blue);
+        letter-spacing: -0.02em;
+      }
+
+      h1 span { color: var(--mauve); }
+
+      .subtitle {
+        color: var(--subtext);
+        margin-top: .5rem;
+        font-size: .95rem;
+      }
+
+      header { max-width: 860px; margin: 0 auto 2rem; }
+
+      .badge {
+        display: inline-block;
+        padding: .2rem .7rem;
+        border-radius: 9999px;
+        font-size: .78rem;
+        font-weight: 600;
+        background: var(--surface);
+        color: var(--mauve);
+        border: 1px solid var(--overlay);
+        margin-top: .75rem;
+      }
+
+      main { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+
+      .card {
+        background: var(--surface);
+        border-radius: 12px;
+        border: 1px solid var(--overlay);
+        overflow: hidden;
+      }
+
+      .card-header {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid var(--overlay);
+      }
+
+      .card-header h2 {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .card-header p {
+        font-size: .82rem;
+        color: var(--subtext);
+        margin-top: .1rem;
+      }
+
+      .icon {
+        font-size: 1.4rem;
+        width: 2.2rem;
+        text-align: center;
+        flex-shrink: 0;
+      }
+
+      .card-body { padding: 1.25rem; display: flex; flex-direction: column; gap: .75rem; }
+
+      .btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+      button {
+        padding: .55rem 1.2rem;
+        border-radius: 8px;
+        border: 1px solid var(--overlay);
+        background: var(--bg);
+        color: var(--text);
+        font-size: .875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 150ms, border-color 150ms;
+      }
+
+      button:hover { background: var(--overlay); border-color: var(--blue); }
+      button:disabled { opacity: .45; cursor: default; }
+
+      button.primary {
+        background: var(--blue);
+        color: var(--bg);
+        border-color: var(--blue);
+        font-weight: 700;
+      }
+
+      button.primary:hover { opacity: .9; }
+
+      .output {
+        font-family: var(--font-mono);
+        font-size: .8rem;
+        line-height: 1.6;
+        background: var(--bg);
+        border-radius: 8px;
+        border: 1px solid var(--overlay);
+        padding: .9rem 1rem;
+        min-height: 3.5rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--subtext);
+      }
+
+      .output.ok    { border-color: var(--green);  color: var(--green); }
+      .output.error { border-color: var(--red);    color: var(--red); }
+      .output.info  { border-color: var(--blue);   color: var(--text); }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: .3rem;
+        padding: .15rem .6rem;
+        border-radius: 9999px;
+        font-size: .72rem;
+        font-weight: 600;
+        font-family: var(--font-mono);
+      }
+
+      .pill.green  { background: rgba(166,227,161,.15); color: var(--green); border: 1px solid rgba(166,227,161,.3); }
+      .pill.yellow { background: rgba(249,226,175,.15); color: var(--yellow); border: 1px solid rgba(249,226,175,.3); }
+      .pill.red    { background: rgba(243,139,168,.15); color: var(--red); border: 1px solid rgba(243,139,168,.3); }
+
+      .cookie-list {
+        display: flex;
+        flex-direction: column;
+        gap: .4rem;
+        font-family: var(--font-mono);
+        font-size: .78rem;
+      }
+
+      .cookie-item {
+        display: flex;
+        align-items: flex-start;
+        gap: .6rem;
+        background: var(--bg);
+        border-radius: 6px;
+        padding: .5rem .75rem;
+        border: 1px solid var(--overlay);
+      }
+
+      .cookie-item .name { color: var(--peach); font-weight: 700; min-width: 7rem; }
+      .cookie-item .attrs { color: var(--subtext); }
+      .cookie-item .attrs .ok    { color: var(--green); }
+      .cookie-item .attrs .warn  { color: var(--yellow); }
+
+      footer {
+        max-width: 860px;
+        margin: 2rem auto 0;
+        font-size: .8rem;
+        color: var(--subtext);
+        text-align: center;
+      }
+
+      footer a { color: var(--blue); text-decoration: none; }
+      footer a:hover { text-decoration: underline; }
+    </style>
   </head>
+
   <body>
-    <h1>vite-plugin-proxy-enhancer Example</h1>
-    <p>Check the Vite terminal output to see the granular proxy logging in action!</p>
-    
-    <div style="display: flex; gap: 1rem;">
-      <button id="btn-api">Test HTTP Proxy (/api/users/1)</button>
-      <button id="btn-ws">Test WS Proxy (/ws)</button>
-    </div>
+    <header>
+      <h1>vite-plugin-<span>proxy-enhancer</span></h1>
+      <p class="subtitle">
+        Interactive demo — shows how the plugin fixes cookies that would silently break on
+        <code>http://localhost</code>.
+      </p>
+      <span class="badge">Open DevTools → Application → Cookies to inspect</span>
+    </header>
 
-    <pre id="output" style="background: #f4f4f4; padding: 1rem; margin-top: 1rem; border-radius: 4px; overflow-x: auto;"></pre>
+    <main>
 
-    <script>
-      const output = document.getElementById('output');
-      const log = (msg) => {
-        output.textContent += msg + '\n';
-      };
+      <!-- ── Card 1: Login (the main value prop) ─────────────────────────── -->
+      <div class="card">
+        <div class="card-header">
+          <span class="icon">🍪</span>
+          <div>
+            <h2>Auth login — 3 misbehaving cookies</h2>
+            <p>
+              The backend sets <code>Domain=api.example.com</code>, <code>Path=/api</code>,
+              and <code>SameSite=None</code>. The plugin rewrites all three so they stick on
+              <code>localhost</code>.
+            </p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="btn-row">
+            <button class="primary" id="btn-login">POST /api/login</button>
+            <button id="btn-login-raw">Raw (no proxy) — port 3001</button>
+          </div>
+          <div id="out-login" class="output">Click a button above to see the response…</div>
+          <div id="cookies-login" class="cookie-list"></div>
+        </div>
+      </div>
 
-      document.getElementById('btn-api').addEventListener('click', async () => {
-        log('Fetching /api/users/1 ...');
+      <!-- ── Card 2: Authenticated route ────────────────────────────────── -->
+      <div class="card">
+        <div class="card-header">
+          <span class="icon">🔐</span>
+          <div>
+            <h2>Authenticated route — cookie round-trip</h2>
+            <p>Calls <code>/api/me</code>. Works only if the browser stored the session cookie above.</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="btn-row">
+            <button id="btn-me">GET /api/me</button>
+          </div>
+          <div id="out-me" class="output">Login first, then try this…</div>
+        </div>
+      </div>
+
+      <!-- ── Card 3: Cookie injection ────────────────────────────────────── -->
+      <div class="card">
+        <div class="card-header">
+          <span class="icon">💉</span>
+          <div>
+            <h2>Cookie injection</h2>
+            <p>Every proxied response gets an <code>x-debug=on</code> cookie injected — zero backend changes.</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="btn-row">
+            <button id="btn-users">GET /api/users</button>
+          </div>
+          <div id="out-users" class="output">Check DevTools → Application → Cookies for x-debug…</div>
+        </div>
+      </div>
+
+      <!-- ── Card 4: WebSocket ───────────────────────────────────────────── -->
+      <div class="card">
+        <div class="card-header">
+          <span class="icon">🔌</span>
+          <div>
+            <h2>WebSocket proxy (ws: true)</h2>
+            <p>Upgrades to <code>/ws</code> are forwarded transparently through the Vite dev server.</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="btn-row">
+            <button id="btn-ws">Connect WebSocket</button>
+          </div>
+          <div id="out-ws" class="output">Click to open a WebSocket tunnel…</div>
+        </div>
+      </div>
+
+    </main>
+
+    <footer>
+      <p>
+        <a href="https://github.com/unknownman/vite-plugin-proxy-enhancer" target="_blank">
+          github.com/unknownman/vite-plugin-proxy-enhancer
+        </a>
+        &nbsp;·&nbsp;
+        <a href="https://www.npmjs.com/package/vite-plugin-proxy-enhancer" target="_blank">
+          npm
+        </a>
+      </p>
+    </footer>
+
+    <script type="module">
+      // ── helpers ──────────────────────────────────────────────────────────
+
+      function out(id, text, cls = "") {
+        const el = document.getElementById(id);
+        el.textContent = text;
+        el.className = "output" + (cls ? " " + cls : "");
+      }
+
+      function renderCookies(containerId, setCookieHeaders) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = "";
+
+        if (!setCookieHeaders.length) return;
+
+        const title = document.createElement("p");
+        title.style.cssText = "font-size:.78rem; color:var(--subtext); margin-bottom:.3rem";
+        title.textContent = `↳ ${setCookieHeaders.length} Set-Cookie header(s) received:`;
+        container.appendChild(title);
+
+        for (const h of setCookieHeaders) {
+          const parts = h.split(";").map(s => s.trim());
+          const [nameVal, ...attrs] = parts;
+          const [name] = nameVal.split("=");
+
+          const item = document.createElement("div");
+          item.className = "cookie-item";
+
+          const nameEl = document.createElement("span");
+          nameEl.className = "name";
+          nameEl.textContent = name;
+
+          const attrsEl = document.createElement("span");
+          attrsEl.className = "attrs";
+
+          const rendered = attrs.map(a => {
+            const key = a.split("=")[0].toLowerCase();
+            if (key === "domain")   return `<span class="warn">${a}</span>`;
+            if (key === "samesite") return `<span class="ok">${a}</span>`;
+            if (a.toLowerCase() === "secure") return `<span class="ok">${a}</span>`;
+            return `<span>${a}</span>`;
+          });
+          attrsEl.innerHTML = rendered.join('<span style="color:var(--overlay)"> · </span>');
+
+          item.appendChild(nameEl);
+          item.appendChild(attrsEl);
+          container.appendChild(item);
+        }
+      }
+
+      // ── card 1: login ─────────────────────────────────────────────────────
+
+      async function doLogin(port) {
+        const id = "out-login";
+        out(id, "Fetching…");
         try {
-          const res = await fetch('/api/users/1');
+          const res = await fetch(`http://localhost:${port}/api/login`, { method: "POST", credentials: "include" });
           const data = await res.json();
-          log('Success: ' + JSON.stringify(data, null, 2));
-        } catch (err) {
-          log('Error: ' + err.message);
+          const cookies = res.headers.getSetCookie?.() ?? [];
+
+          out(id,
+            `${res.status} ${res.statusText} — ${JSON.stringify(data)}\n\n` +
+            (cookies.length
+              ? `Set-Cookie headers (${cookies.length}):\n` + cookies.map(c => `  ${c}`).join("\n")
+              : "(no Set-Cookie headers — browser hid them due to CORS or Domain mismatch)"),
+            res.ok ? "ok" : "error"
+          );
+
+          if (port === 5173) renderCookies("cookies-login", cookies);
+          else document.getElementById("cookies-login").innerHTML =
+            '<p style="font-size:.78rem;color:var(--red);margin-top:.3rem">⚠ Raw backend: Domain mismatch means browser will reject these cookies</p>';
+        } catch (e) {
+          out(id, `Error: ${e.message}\n\nIs the backend running? → node example/mock-api.mjs`, "error");
+        }
+      }
+
+      document.getElementById("btn-login").addEventListener("click", () => doLogin(5173));
+      document.getElementById("btn-login-raw").addEventListener("click", () => doLogin(3001));
+
+      // ── card 2: /api/me ───────────────────────────────────────────────────
+
+      document.getElementById("btn-me").addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/me", { credentials: "include" });
+          const data = await res.json();
+          out("out-me", `${res.status} — ${JSON.stringify(data, null, 2)}`, res.ok ? "ok" : "error");
+        } catch (e) {
+          out("out-me", `Error: ${e.message}`, "error");
         }
       });
 
-      document.getElementById('btn-ws').addEventListener('click', () => {
-        log('Connecting to WebSocket /ws ...');
-        const ws = new WebSocket(`ws://${location.host}/ws`);
-        
+      // ── card 3: /api/users ────────────────────────────────────────────────
+
+      document.getElementById("btn-users").addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/users", { credentials: "include" });
+          const data = await res.json();
+          out("out-users",
+            `${res.status} — ${JSON.stringify(data, null, 2)}\n\n` +
+            "Check DevTools → Application → Cookies for x-debug=on",
+            "info"
+          );
+        } catch (e) {
+          out("out-users", `Error: ${e.message}`, "error");
+        }
+      });
+
+      // ── card 4: WebSocket ─────────────────────────────────────────────────
+
+      let ws;
+      document.getElementById("btn-ws").addEventListener("click", () => {
+        if (ws) { ws.close(); ws = null; return; }
+
+        out("out-ws", "Connecting…");
+        ws = new WebSocket(`ws://${location.host}/ws`);
+
         ws.onopen = () => {
-          log('WebSocket connected. Sending message...');
-          ws.send('Hello from vite-plugin-proxy-enhancer!');
+          out("out-ws", "✓ WebSocket connected through Vite proxy.\nSending ping…", "ok");
+          ws.send("\x81\x04ping"); // raw WebSocket frame: opcode=text, payload="ping"
         };
-        
-        ws.onmessage = (event) => {
-          log('WebSocket received: ' + event.data);
-          ws.close();
+
+        ws.onmessage = e => {
+          const prev = document.getElementById("out-ws").textContent;
+          out("out-ws", prev + "\n← Received: " + e.data, "ok");
         };
-        
-        ws.onerror = () => log('WebSocket error');
-        ws.onclose = () => log('WebSocket closed');
+
+        ws.onerror = () => out("out-ws", "WebSocket error — is the mock backend running?", "error");
+
+        ws.onclose = () => {
+          out("out-ws", "WebSocket closed.");
+          ws = null;
+        };
+
+        document.getElementById("btn-ws").textContent = "Disconnect WebSocket";
       });
     </script>
   </body>

@@ -4,45 +4,70 @@ import { proxyEnhancer } from 'vite-plugin-proxy-enhancer';
 /**
  * Example: local development against a plain HTTP backend.
  *
- * Key points:
- *  - `secure: false`   — strips the Secure flag from Set-Cookie headers.
- *                        Without this, browsers silently drop Secure cookies on
- *                        HTTP pages (http://localhost). This is the default when
- *                        cookieRewrite is enabled.
- *  - `sameSite: 'lax'` — replaces SameSite=None (which *requires* Secure and
- *                        would break on HTTP) with Lax, which works fine locally.
- *  - `rewriteDomain: true` — removes the production Domain attribute so the
- *                        cookie is scoped to localhost automatically.
+ * The mock backend (`mock-api.mjs`) deliberately sends production-style cookies:
+ *   - Domain=api.example.com  → browser rejects on localhost
+ *   - Path=/api               → cookie not sent to / routes
+ *   - SameSite=None           → requires Secure, but Secure = no storage on http://
+ *
+ * The plugin's cookieRewrite defaults fix all three automatically.
  */
 export default defineConfig({
+  server: {
+    // Hand-written entry — the plugin detects it and leaves it untouched.
+    // It will warn if you also add /legacy to the plugin's proxies array.
+    proxy: {
+      "/legacy": "http://localhost:3001",
+    },
+  },
+
   plugins: [
     proxyEnhancer({
+      // ── Global defaults applied to every rule ─────────────────────────
       defaults: {
         changeOrigin: true,
-        // Apply cookie fixes to every proxy rule unless overridden.
         cookieRewrite: {
+          // ① Strip Domain= so the cookie applies to localhost instead of api.example.com
           rewriteDomain: true,
-          secure: false,     // Strip Secure — http://localhost is not HTTPS
-          sameSite: 'lax',   // Override SameSite=None to avoid forcing Secure back
+          // ② Widen Path=/api → / so the cookie is sent on all routes
+          path: "/",
+          // ③ Strip Secure — http://localhost is not HTTPS, browser would drop it
+          secure: false,
+          // ④ Replace SameSite=None with Lax (None requires Secure, which we just stripped)
+          sameSite: "lax",
+          // ⑤ Inject a debug cookie into every proxied response, no backend changes needed
+          inject: { "x-debug": "on" },
         },
       },
+
+      // ── Global logger ─────────────────────────────────────────────────
+      logger: {
+        level: "info",
+        logMatches:          true,  // show which pattern matched on each line
+        logCookieRewrites:   true,  // show cookie diff: rewritten / injected / unchanged
+        showResponseHeaders: false, // flip to true to see Set-Cookie in the terminal
+      },
+
+      // ── Proxy rules ───────────────────────────────────────────────────
       proxies: [
-        // ─── REST API ──────────────────────────────────────────
+        // Health check — silent (no logging noise in the terminal)
         {
-          pattern: '^/api/.*',
-          target: 'https://jsonplaceholder.typicode.com',
-          rewrite: (path) => path.replace(/^\/api/, ''),
-          log: {
-            showBody: true,
-            showRequestHeaders: true,
-          },
+          pattern: "/api/health",
+          target:  "http://localhost:3001",
+          log:     false,
         },
-        // ─── WebSocket ─────────────────────────────────────────
+
+        // All other /api/* routes — logged with cookie diff
         {
-          pattern: '/ws',
-          target: 'ws://echo.websocket.events',
-          ws: true,
-          log: true,
+          pattern: "/api",
+          target:  "http://localhost:3001",
+          // Inherits the global cookieRewrite defaults above.
+        },
+
+        // WebSocket echo — logged with 101 status
+        {
+          pattern: "/ws",
+          target:  "http://localhost:3001",
+          ws:      true,
         },
       ],
     }),
