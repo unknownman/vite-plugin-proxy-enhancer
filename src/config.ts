@@ -11,8 +11,11 @@ import { LOGGER_DEFAULTS } from "./logger";
 
 // ─── Validation ────────────────────────────────────────────────
 
+/** Prefix used for every error/warning the plugin surfaces, for easy grepping. */
+const ERROR_PREFIX = "[proxy-enhancer]";
+
 function throwConfigError(message: string): never {
-  throw new Error(`[proxy-enhancer] Invalid configuration: ${message}`);
+  throw new Error(`${ERROR_PREFIX} Invalid configuration: ${message}`);
 }
 
 function validatePattern(
@@ -26,6 +29,16 @@ function validatePattern(
   }
   if (pattern === "") {
     throwConfigError(`proxy[${index}].pattern must not be empty`);
+  }
+  // Vite matches proxies against the request URL path: a leading "/" enables glob
+  // matching ("/api/**"), a leading "^" enables a RegExp ("^/api/.*"). Anything
+  // else can never match, so fail early instead of silently proxying nothing.
+  if (!pattern.startsWith("/") && !pattern.startsWith("^")) {
+    throwConfigError(
+      `proxy[${index}].pattern "${pattern}" will never match a request. ` +
+        'Patterns are matched against URL paths, so they must start with "/" ' +
+        '(e.g. "/api" or "/api/**") or "^" for a RegExp (e.g. "^/api/.*").',
+    );
   }
   return true;
 }
@@ -42,11 +55,20 @@ function validateTarget(
   if (target === "") {
     throwConfigError(`proxy[${index}].target must not be empty`);
   }
+  let parsed: URL;
   try {
-    new URL(target);
+    parsed = new URL(target);
   } catch {
     throwConfigError(
-      `proxy[${index}].target is not a valid URL: "${target}". Expected a full URL like "http://localhost:3001"`,
+      `proxy[${index}].target is not a valid URL: "${target}". ` +
+        'Expected a full URL with a protocol, e.g. "http://localhost:3001" ' +
+        'or "https://api.example.com".',
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throwConfigError(
+      `proxy[${index}].target "${target}" uses protocol "${parsed.protocol}", ` +
+        'which http-proxy cannot forward to. Only "http:" and "https:" targets are supported.',
     );
   }
   return true;
@@ -93,18 +115,45 @@ const PROXY_DEFAULTS: Pick<Required<EnhancedProxyOptions>, "changeOrigin" | "sec
 
 // ─── Main Resolver ─────────────────────────────────────────────
 
+/**
+ * Validate and fully resolve the plugin options.
+ *
+ * Applies the merge precedence `PROXY_DEFAULTS < defaults < entry`, resolves
+ * `cookieRewrite` (boolean shorthand → object) and `log` (boolean/object → a
+ * `{ enabled, options }` pair), and throws descriptive errors on any
+ * misconfiguration so misbehaving proxies fail at startup rather than silently.
+ *
+ * @example
+ * resolveConfig({ proxies: [{ pattern: "/api", target: "http://localhost:3001" }] })
+ * @param options The raw plugin options.
+ * @throws {Error} With a `[proxy-enhancer]`-prefixed, actionable message when the
+ *   configuration is invalid (missing proxies, bad patterns/targets, etc.).
+ * @returns The resolved configuration.
+ */
 export function resolveConfig(options: PluginOptions): ResolvedConfig {
-  if (options === null) {
-    throwConfigError('expected an options object, got null. Pass { proxies: [...] }');
+  if (options === undefined || options === null) {
+    throwConfigError(
+      `expected an options object, got ${options === null ? "null" : "undefined"}. ` +
+        'Call the plugin with an options object: proxyEnhancer({ proxies: [...] }).',
+    );
   }
   if (typeof options !== "object") {
-    throwConfigError("expected an object, got " + typeof options);
+    throwConfigError("expected an options object, got " + typeof options);
   }
 
   if (!Array.isArray(options.proxies)) {
     throwConfigError(
       '"proxies" must be an array of proxy configurations. Received: ' +
-        typeof options.proxies,
+        (options.proxies === undefined
+          ? "undefined (missing the \"proxies\" option?)"
+          : typeof options.proxies),
+    );
+  }
+
+  if (options.defaults !== undefined && typeof options.defaults !== "object") {
+    throwConfigError(
+      '"defaults" must be an object of proxy defaults, got ' +
+        typeof options.defaults,
     );
   }
 
@@ -112,9 +161,11 @@ export function resolveConfig(options: PluginOptions): ResolvedConfig {
   const defaults = options.defaults ?? {};
 
   const proxies: ResolvedProxyOptions[] = options.proxies.map((entry, i) => {
-    if (!entry || typeof entry !== "object") {
+    const label = `proxy[${i}] (pattern: ${JSON.stringify((entry as { pattern?: unknown } | null)?.pattern ?? null)})`;
+
+    if (entry === undefined || entry === null || typeof entry !== "object") {
       throwConfigError(
-        `proxy[${i}] must be an object, got ${typeof entry}`,
+        `${label} must be an object with "pattern" and "target", got ${entry === null ? "null" : typeof entry}`,
       );
     }
 

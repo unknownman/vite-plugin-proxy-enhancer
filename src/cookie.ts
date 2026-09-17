@@ -1,7 +1,12 @@
 // ─── Types ─────────────────────────────────────────────────────
 
+/** The canonical pass-through values for the `SameSite` cookie attribute. */
 export type SameSiteValue = "Strict" | "Lax" | "None";
 
+/**
+ * A single attribute inside a `Set-Cookie` header, e.g. `Domain=example.com` or the
+ * bare `HttpOnly` flag.
+ */
 export interface CookieAttribute {
   /** Attribute name in canonical casing, e.g. "Domain", "HttpOnly". */
   name: string;
@@ -15,9 +20,13 @@ export interface CookieAttribute {
   modified?: boolean;
 }
 
+/** A structured, attribute-aware representation of a single cookie. */
 export interface ParsedCookie {
+  /** Cookie name (may already have its prefix stripped by the caller). */
   name: string;
+  /** Cookie value (unquoted from the raw header). */
   value: string;
+  /** Attributes in source order, e.g. Path, Domain, HttpOnly. */
   attributes: CookieAttribute[];
   /** Original header string this cookie was parsed from, if any. */
   original?: string;
@@ -26,6 +35,13 @@ export interface ParsedCookie {
 }
 
 export interface CookieRewriteRule {
+  /** Legacy shorthand for `removeDomain`: strip the Domain attribute so the cookie
+   *  applies to whatever host the response was served from (the dev-server origin).
+   *  Use `removeDomain` or `domain` for explicit control. @deprecated */
+  rewriteDomain?: boolean;
+  /** Legacy shorthand for `path: "/"`: set the Path attribute to `/` so the cookie
+   *  applies to the whole proxied app. Use `path` for explicit control. @deprecated */
+  rewritePath?: boolean;
   /** Replace the Domain attribute value, e.g. ".example.com". */
   domain?: string;
   /** Remove the Domain attribute entirely. */
@@ -52,18 +68,31 @@ export interface CookieRewriteRule {
   exclude?: string[];
 }
 
+/**
+ * Options for building a cookie from scratch via {@link serializeCookie}.
+ */
 export interface CookieSerializeOptions {
+  /** `Domain=<value>` attribute. */
   domain?: string;
+  /** `Path=<value>` attribute. */
   path?: string;
+  /** `Expires=<value>` attribute (rendered as a UTC date string). */
   expires?: Date;
+  /** `Max-Age=<seconds>` attribute (floored). */
   maxAge?: number;
+  /** Emit the `HttpOnly` flag. */
   httpOnly?: boolean;
+  /** Emit the `Secure` flag. */
   secure?: boolean;
+  /** Emit `SameSite=<value>`. */
   sameSite?: SameSiteValue;
 }
 
+/** Result of {@link checkPrefixRequirements}: the detected prefix and any violations. */
 export interface CookiePrefixReport {
+  /** The detected prefix, or `""` for an unprefixed cookie. */
   prefix: "" | "__Host-" | "__Secure-";
+  /** Human-readable descriptions of every requirement that was not met. */
   violations: string[];
 }
 
@@ -83,6 +112,17 @@ const ATTR_NAMES: Record<string, string> = {
 
 // ─── Request Cookie Header Parsing ─────────────────────────────
 
+/**
+ * Parse a `Cookie` request header into a name → value map.
+ *
+ * Values are unquoted. When the same name appears multiple times the last
+ * occurrence wins, mirroring browser behavior.
+ *
+ * @example
+ * parseCookies("theme=dark; session=abc123") // => { theme: "dark", session: "abc123" }
+ * @param header The raw `Cookie` header value.
+ * @returns A record of cookie name → cookie value.
+ */
 export function parseCookies(header: string): Record<string, string> {
   const cookies: Record<string, string> = {};
   if (!header) return cookies;
@@ -138,6 +178,18 @@ function isCookiePairStart(value: string): boolean {
   return false;
 }
 
+/**
+ * Split a (possibly collapsed) `Set-Cookie` header string into individual cookie
+ * strings.
+ *
+ * Multiple `Set-Cookie` responses get merged into a single comma-joined string by
+ * some clients and servers, which makes naive `split(",")` wrong — cookie values
+ * and the `Expires` attribute can contain commas. This variant only splits on
+ * commas that begin a new cookie pair while tracking quoted sections.
+ *
+ * @param header A raw `Set-Cookie` header value.
+ * @returns The individual cookie header strings.
+ */
 export function splitSetCookieString(header: string): string[] {
   const cookies: string[] = [];
   let current = "";
@@ -173,6 +225,16 @@ export function splitSetCookieString(header: string): string[] {
   return cookies;
 }
 
+/**
+ * Parse a single `Set-Cookie` header string into a structured cookie.
+ *
+ * Attribute names are canonicalized (`httponly` → `HttpOnly`, `samesite` → `SameSite`, …)
+ * and `SameSite` values are normalized to `Strict` / `Lax` / `None`. Returns `null`
+ * for empty or malformed input (missing `name=value` pair).
+ *
+ * @param header A single `Set-Cookie` header string.
+ * @returns The parsed cookie, or `null` if it cannot be parsed.
+ */
 export function parseSetCookieString(header: string): ParsedCookie | null {
   if (typeof header !== "string") return null;
   const input = header.trim();
@@ -221,6 +283,15 @@ export function parseSetCookieString(header: string): ParsedCookie | null {
   };
 }
 
+/**
+ * Parse a `Set-Cookie` header into a list of structured cookies.
+ *
+ * Accepts a single header string (which may itself contain multiple cookies joined
+ * by commas), an existing array, or nothing.
+ *
+ * @param input The raw `Set-Cookie` header, an array of them, or `undefined`/`null`.
+ * @returns An array of parsed cookies (empty when the input is empty).
+ */
 export function parseSetCookieHeader(
   input: string | string[] | undefined | null,
 ): ParsedCookie[] {
@@ -238,6 +309,16 @@ export function parseSetCookieHeader(
 
 // ─── Set-Cookie Serialization ──────────────────────────────────
 
+/**
+ * Serialize a parsed cookie back into a `Set-Cookie` header string.
+ *
+ * Cookies whose `modified` flag is unset and that were parsed from a header
+ * (`original` present) are returned byte-for-byte unchanged. Modified or newly
+ * built cookies are re-emitted from their attributes.
+ *
+ * @param cookie The cookie to serialize.
+ * @returns A single `Set-Cookie` header string.
+ */
 export function serializeSetCookie(cookie: ParsedCookie): string {
   if (cookie.original !== undefined && !cookie.modified) {
     return cookie.original;
@@ -258,6 +339,22 @@ function toCookieDate(date: Date): string {
   return date.toUTCString();
 }
 
+/**
+ * Build a `Set-Cookie` header string for a cookie not parsed from an existing header.
+ *
+ * Attributes are emitted in a stable order: `Max-Age`, `Expires`, `Domain`, `Path`,
+ * `Secure`, `HttpOnly`, `SameSite`. Note that `secure: true` in an `http:` dev
+ * server context is commonly paired with `sameSite: "None"`.
+ *
+ * @example
+ * serializeCookie("session", "abc123", { path: "/", httpOnly: true, sameSite: "Lax" })
+ * // => "session=abc123; Path=/; HttpOnly; SameSite=Lax"
+ *
+ * @param name The cookie name.
+ * @param value The cookie value.
+ * @param options Serialization options (attributes).
+ * @returns A single `Set-Cookie` header string.
+ */
 export function serializeCookie(
   name: string,
   value: string,
@@ -305,6 +402,13 @@ export function serializeCookie(
 
 // ─── Attribute Helpers ─────────────────────────────────────────
 
+/**
+ * Look up a single attribute of a parsed cookie by name (case-insensitive).
+ *
+ * @param cookie The cookie to inspect.
+ * @param name An attribute name, e.g. `"Domain"` or `"samesite"`.
+ * @returns The matching attribute, or `undefined` when the cookie does not have it.
+ */
 export function getCookieAttribute(
   cookie: ParsedCookie,
   name: string,
@@ -315,18 +419,45 @@ export function getCookieAttribute(
 
 // ─── Prefix Handling ───────────────────────────────────────────
 
+/**
+ * Detect the RFC-6265bis name prefix of a cookie.
+ *
+ * `__Host-` and `__Secure-` prefixes impose browser-enforced requirements — see
+ * {@link checkPrefixRequirements}.
+ *
+ * @param name A cookie name.
+ * @returns `"__Host-"`, `"__Secure-"`, or `""` when there is no prefix.
+ */
 export function getCookiePrefix(name: string): "" | "__Host-" | "__Secure-" {
   if (name.startsWith("__Host-")) return "__Host-";
   if (name.startsWith("__Secure-")) return "__Secure-";
   return "";
 }
 
+/**
+ * Remove the `__Host-` / `__Secure-` prefix from a cookie name.
+ *
+ * Returns the name unchanged when the stripped form would be empty.
+ *
+ * @param name A cookie name.
+ * @returns The name without its prefix.
+ */
 export function stripCookiePrefix(name: string): string {
   const prefix = getCookiePrefix(name);
   const stripped = prefix ? name.slice(prefix.length) : name;
   return stripped === "" ? name : stripped;
 }
 
+/**
+ * Verify the browser-enforced requirements for prefixed cookies.
+ *
+ * A `__Secure-` cookie must carry `Secure`. A `__Host-` cookie must additionally
+ * set `Path=/` and must not set a `Domain`. Vendors may silently drop cookies that
+ * violate these rules, so this is useful for diagnosing "cookie never sent" issues.
+ *
+ * @param cookie The cookie to validate.
+ * @returns A report with the detected prefix and a list of violations (empty when valid).
+ */
 export function checkPrefixRequirements(cookie: ParsedCookie) {
   const prefix = getCookiePrefix(cookie.name);
   const report: CookiePrefixReport = { prefix, violations: [] };
@@ -416,6 +547,24 @@ function setFlag(
   return false;
 }
 
+/**
+ * Rewrite a single parsed cookie according to a rewrite rule.
+ *
+ * Returns the input cookie unchanged (same reference) when nothing needs to change.
+ * `rewriteDomain` is a deprecated shorthand for `removeDomain`, and `rewritePath` a
+ * deprecated shorthand for `path: "/"` — prefer the explicit options.
+ *
+ * @example
+ * rewriteCookie(
+ *   parseSetCookieString("session=abc; Domain=api.example.com; Path=/api")!,
+ *   { rewriteDomain: true, path: "/" },
+ * )
+ * // => "session=abc; Path=/"
+ *
+ * @param cookie The cookie to rewrite.
+ * @param rule The rewrite rules to apply.
+ * @returns The rewritten cookie (a new object when modified, input otherwise).
+ */
 export function rewriteCookie(
   cookie: ParsedCookie,
   rule: CookieRewriteRule,
@@ -426,17 +575,20 @@ export function rewriteCookie(
   const attributes = cookie.attributes.map((a) => ({ ...a }));
   let changed = name !== cookie.name;
 
-  if (rule.removeDomain) {
+  if (rule.removeDomain || rule.rewriteDomain) {
     changed = removeAttr(attributes, "domain") || changed;
-  }
-  if (rule.domain !== undefined) {
+  } else if (rule.domain !== undefined) {
     changed = setAttr(attributes, "Domain", "domain", rule.domain) || changed;
   }
+
   if (rule.removePath) {
     changed = removeAttr(attributes, "path") || changed;
-  }
-  if (rule.path !== undefined) {
-    changed = setAttr(attributes, "Path", "path", rule.path) || changed;
+  } else {
+    const nextPath =
+      rule.path !== undefined ? rule.path : rule.rewritePath ? "/" : undefined;
+    if (nextPath !== undefined) {
+      changed = setAttr(attributes, "Path", "path", nextPath) || changed;
+    }
   }
   if (rule.removeSecure) {
     changed = setFlag(attributes, "Secure", "secure", false) || changed;
@@ -467,6 +619,18 @@ export function rewriteCookie(
   };
 }
 
+/**
+ * Rewrite all cookies in a `Set-Cookie` header, preserving each one separately.
+ *
+ * The input may be a single (possibly collapsed) header string or an array. The
+ * returned array has one entry per cookie, so multiple `Set-Cookie` headers stay
+ * separate instead of being joined into one comma-separated value. Cookies listed
+ * in {@link CookieRewriteRule.exclude} are passed through untouched.
+ *
+ * @param input The raw `Set-Cookie` header(s).
+ * @param rule The rewrite rules to apply.
+ * @returns One serialized header string per cookie.
+ */
 export function rewriteSetCookieHeaders(
   input: string | string[] | undefined | null,
   rule: CookieRewriteRule,

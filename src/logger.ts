@@ -2,29 +2,47 @@ import pc from "picocolors";
 import { STATUS_CODES } from "node:http";
 import type { LoggerOptions, LogLevel } from "./types";
 
+/** The console-like surface a {@link Logger} writes to. */
 export type LogStream = Pick<Console, "log" | "warn" | "error">;
 
+/** A Node headers-like object: header name → value, array, or nothing. */
 export type HeadersLike = Record<string, string | string[] | undefined>;
 
+/** Everything the logger needs to describe an outgoing proxied request. */
 export interface ProxyLogRequest {
+  /** HTTP method, e.g. "GET". */
   method: string;
+  /** Original request path, e.g. "/api/users". */
   url: string;
+  /** Target server the request is proxied to. */
   target: string;
+  /** Pattern of the proxy rule that matched, shown when `logMatches` is enabled. */
   pattern?: string;
+  /** Raw request headers (only captured by the caller when header logging is on). */
   headers?: HeadersLike;
 }
 
+/** The proxied response data used to complete a request log. */
 export interface ProxyLogResponse {
+  /** HTTP status code. */
   statusCode: number;
+  /** Raw response headers. */
   headers?: HeadersLike;
+  /** Captured response body (only when `showBody` is enabled). */
   body?: string;
 }
 
+/** A handle returned by {@link Logger.request} that finishes the log line. */
 export interface ProxyLogHandle {
   /** Complete the request log. Pass the proxied response (or nothing on failure). */
   end(response?: ProxyLogResponse): void;
 }
 
+/**
+ * The plugin logger. Level-named methods emit prefixed, time-stamped lines at or
+ * above the threshold configured by {@link LoggerOptions.level}. `request` starts
+ * a per-request log that is printed when the response arrives.
+ */
 export interface Logger {
   enabled: boolean;
   trace(message: string): void;
@@ -36,6 +54,10 @@ export interface Logger {
   request(info: ProxyLogRequest): ProxyLogHandle;
 }
 
+/**
+ * Default logger options. Any unset option resolves to these values.
+ * @see {@link LoggerOptions}
+ */
 export const LOGGER_DEFAULTS: Required<LoggerOptions> = {
   level: "info",
   color: true,
@@ -107,6 +129,22 @@ const BODY_LIMIT = 2000;
 
 const SLOW_MS = 1000;
 
+/**
+ * Create a logger.
+ *
+ * Prefer configuring logging through the plugin's `logger` option; this factory is
+ * exported for advanced use (e.g. a shared logger instance in your own tooling).
+ *
+ * @example
+ * const logger = createLogger({ level: "debug", color: false });
+ * const handle = logger.request({ method: "GET", url: "/api", target: "https://api.example.com" });
+ * // ...later, when the response arrives:
+ * handle.end({ statusCode: 200 });
+ *
+ * @param options Logger options (merged over {@link LOGGER_DEFAULTS}).
+ * @param stream Destination stream, defaults to `console`.
+ * @returns A ready-to-use {@link Logger}.
+ */
 export function createLogger(
   options?: LoggerOptions,
   stream: LogStream = console,
@@ -201,7 +239,8 @@ export function createLogger(
       response === undefined
         ? `${c.red("ERROR")} ${c.gray("no response")}`
         : statusLabel(response.statusCode);
-    const head = `${method} ${url} ${arrow} ${status} ${duration(ms)} ${target}`;
+    const match = opts.logMatches && info.pattern ? ` ${c.dim(`(${info.pattern})`)}` : "";
+    const head = `${method} ${url}${match} ${arrow} ${status} ${duration(ms)} ${target}`;
 
     const details: string[] = [];
     if (opts.showRequestHeaders) {
@@ -253,4 +292,5 @@ export function createLogger(
   };
 }
 
+/** The concrete type returned by {@link createLogger}. */
 export type LoggerInstance = ReturnType<typeof createLogger>;
