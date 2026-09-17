@@ -255,6 +255,11 @@ You can keep existing `server.proxy` entries and use the plugin for a few enhanc
 
 `cookieRewrite: true` enables rewriting with defaults: no attributes changed, no exclusions, no injection — inspect or log real traffic (`logCookieRewrites`) before adding rules.
 
+Safety rules applied on top of whatever you configure (rewriting never emits an invalid cookie):
+
+- **SameSite=None always keeps `Secure`** — browsers reject a `None` cookie without it, so `Secure` is added back even if `removeSecure` is set.
+- **`__Host-` / `__Secure-` prefixes always keep `Secure`**, and a `__Host-` cookie is auto-de-prefixed when a `domain` conflicts or `path` is set away from `/` (those would make it invalid); `removePrefixes` strips the prefix explicitly.
+
 ### `LoggerOptions`
 
 | Option               | Type               | Default   | Description                                    |
@@ -291,7 +296,12 @@ PROXY_DEFAULTS   (changeOrigin: true, secure: true)
 These helpers are exported if you ever need them outside the plugin:
 
 ```ts
-import { getSetCookieHeaderValues, rewriteResponseSetCookies } from "vite-plugin-proxy-enhancer";
+import {
+  getSetCookieHeaderValues,
+  rewriteCookieString,
+  rewriteResponseSetCookies,
+  injectResponseCookies,
+} from "vite-plugin-proxy-enhancer";
 ```
 
 ## Error handling

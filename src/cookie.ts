@@ -5,12 +5,13 @@ export type SameSiteValue = "Strict" | "Lax" | "None";
 
 /**
  * A single attribute inside a `Set-Cookie` header, e.g. `Domain=example.com` or the
- * bare `HttpOnly` flag.
+ * bare `HttpOnly` flag. `raw` preserves the original bytes for untouched attributes;
+ * modified/added attributes are re-emitted from `name`/`value`.
  */
 export interface CookieAttribute {
   /** Attribute name in canonical casing, e.g. "Domain", "HttpOnly". */
   name: string;
-  /** Attribute value. "" for flag attributes like Secure / HttpOnly. */
+  /** Attribute value. "" for flag attributes like Secure / HttpOnly (unquoted). */
   value: string;
   /** Original raw text of the attribute, e.g. "Domain=api.example.com". */
   raw: string;
@@ -18,22 +19,33 @@ export interface CookieAttribute {
   added?: boolean;
   /** True when the attribute value was changed after parsing. */
   modified?: boolean;
+  /** True when the original value was wrapped in double quotes. */
+  quoted?: boolean;
 }
 
 /** A structured, attribute-aware representation of a single cookie. */
 export interface ParsedCookie {
   /** Cookie name (may already have its prefix stripped by the caller). */
   name: string;
-  /** Cookie value (unquoted from the raw header). */
+  /** Cookie value (unquoted). */
   value: string;
   /** Attributes in source order, e.g. Path, Domain, HttpOnly. */
   attributes: CookieAttribute[];
+  /** True when `value` was wrapped in double quotes in the original header. */
+  quoted?: boolean;
   /** Original header string this cookie was parsed from, if any. */
   original?: string;
   /** True when the cookie differs from its original form. */
   modified: boolean;
 }
 
+/**
+ * Rewrite rules applied to `Set-Cookie` attributes.
+ *
+ * Every rule is *declarative*: `removeX` removes the attribute, `x` replaces its
+ * value, and booleans like {@link secure} / {@link httpOnly} ensure the flag is
+ * present. Rewriting never emits an invalid cookie — see {@link rewriteCookie}.
+ */
 export interface CookieRewriteRule {
   /** Legacy shorthand for `removeDomain`: strip the Domain attribute so the cookie
    *  applies to whatever host the response was served from (the dev-server origin).
@@ -52,7 +64,8 @@ export interface CookieRewriteRule {
   removePath?: boolean;
   /** Ensure the Secure flag is present. */
   secure?: boolean;
-  /** Remove the Secure flag. */
+  /** Remove the Secure flag. (Overridden when the cookie requires Secure — see
+   *  {@link rewriteCookie}.) */
   removeSecure?: boolean;
   /** Ensure the HttpOnly flag is present. */
   httpOnly?: boolean;
@@ -62,15 +75,15 @@ export interface CookieRewriteRule {
   sameSite?: SameSiteValue;
   /** Remove the SameSite attribute. */
   removeSameSite?: boolean;
-  /** Strip trailing "__Host-" and "__Secure-" prefixes from the cookie name. */
+  /** Strip the `__Host-` / `__Secure-` prefix from the cookie name. */
   removePrefixes?: boolean;
-  /** Cookie names (exact, comparing the original name) to leave untouched. */
+  /** Cookie names (exact, comparing the original name) to leave untouched. Only
+   *  honored by list-based rewriting ({@link rewriteSetCookieHeaders} /
+   *  {@link rewriteResponseSetCookies}); ignored by the single-cookie APIs. */
   exclude?: string[];
 }
 
-/**
- * Options for building a cookie from scratch via {@link serializeCookie}.
- */
+/** Options for building a cookie from scratch via {@link serializeCookie}. */
 export interface CookieSerializeOptions {
   /** `Domain=<value>` attribute. */
   domain?: string;
@@ -96,7 +109,7 @@ export interface CookiePrefixReport {
   violations: string[];
 }
 
-// ─── Constants ─────────────────────────────────────────────────
+// ─── Constants & low-level string helpers ──────────────────────
 
 const ATTR_NAMES: Record<string, string> = {
   domain: "Domain",
@@ -109,6 +122,73 @@ const ATTR_NAMES: Record<string, string> = {
   partitioned: "Partitioned",
   priority: "Priority",
 };
+
+/** Match a cookie name case-insensitively (RFC 7230 §3.2: field names are ASCII-insensitive). */
+const CUT_KEY = /^set-cookie$/i;
+
+function unquote(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function isQuoted(value: string): boolean {
+  return value.length >= 2 && value.startsWith('"') && value.endsWith('"');
+}
+
+function canonicalAttributeName(name: string): string {
+  return ATTR_NAMES[name] ?? name;
+}
+
+function canonicalSameSiteValue(value: string): string {
+  switch (value.toLowerCase()) {
+    case "strict":
+      return "Strict";
+    case "lax":
+      return "Lax";
+    case "none":
+      return "None";
+    default:
+      return value;
+  }
+}
+
+/** Split `text` on `delimiter`, ignoring delimiters inside a quoted section. */
+function splitOnUnquoted(text: string, delimiter: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      current += ch;
+    } else if (!inQuotes && ch === delimiter) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
+
+function isDateSegment(value: string): boolean {
+  return /^\d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT/.test(
+    value.trimStart(),
+  );
+}
+
+function isCookiePairStart(value: string): boolean {
+  const text = value.trimStart();
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "=") return i > 0;
+    if (text[i] === ";") return false;
+  }
+  return false;
+}
 
 // ─── Request Cookie Header Parsing ─────────────────────────────
 
@@ -139,53 +219,14 @@ export function parseCookies(header: string): Record<string, string> {
 
 // ─── Set-Cookie Parsing ────────────────────────────────────────
 
-function unquote(value: string): string {
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-
-function canonicalAttributeName(name: string): string {
-  return ATTR_NAMES[name] ?? name;
-}
-
-function canonicalSameSiteValue(value: string): string {
-  switch (value.toLowerCase()) {
-    case "strict":
-      return "Strict";
-    case "lax":
-      return "Lax";
-    case "none":
-      return "None";
-    default:
-      return value;
-  }
-}
-
-function isDateSegment(value: string): boolean {
-  return /^\d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT/.test(
-    value.trimStart(),
-  );
-}
-
-function isCookiePairStart(value: string): boolean {
-  const text = value.trimStart();
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === "=") return i > 0;
-    if (text[i] === ";") return false;
-  }
-  return false;
-}
-
 /**
  * Split a (possibly collapsed) `Set-Cookie` header string into individual cookie
  * strings.
  *
- * Multiple `Set-Cookie` responses get merged into a single comma-joined string by
- * some clients and servers, which makes naive `split(",")` wrong — cookie values
- * and the `Expires` attribute can contain commas. This variant only splits on
- * commas that begin a new cookie pair while tracking quoted sections.
+ * Some clients and servers merge multiple `Set-Cookie` responses into a single
+ * comma-joined string, which makes naive `split(",")` wrong because cookie values
+ * and `Expires` dates can contain commas. This variant only splits on a comma that
+ * begins a new `name=value` pair while respecting quoted sections and date segments.
  *
  * @param header A raw `Set-Cookie` header value.
  * @returns The individual cookie header strings.
@@ -228,10 +269,13 @@ export function splitSetCookieString(header: string): string[] {
 /**
  * Parse a single `Set-Cookie` header string into a structured cookie.
  *
- * Attribute names are canonicalized (`httponly` → `HttpOnly`, `samesite` → `SameSite`, …)
- * and `SameSite` values are normalized to `Strict` / `Lax` / `None`. Returns `null`
- * for empty or malformed input (missing `name=value` pair).
+ * Attribute names and order are preserved (names are canonicalized for display,
+ * e.g. `httponly` → `HttpOnly`), `SameSite` values are normalized to
+ * `Strict`/`Lax`/`None`, and quoted values — including values that contain `;`
+ * — are handled. Returns `null` for empty or malformed input.
  *
+ * @example
+ * parseSetCookieString('session=abc123; Path=/; HttpOnly')
  * @param header A single `Set-Cookie` header string.
  * @returns The parsed cookie, or `null` if it cannot be parsed.
  */
@@ -240,43 +284,49 @@ export function parseSetCookieString(header: string): ParsedCookie | null {
   const input = header.trim();
   if (!input) return null;
 
-  const semicolon = input.indexOf(";");
-  const pair = semicolon === -1 ? input : input.slice(0, semicolon);
-  const attrsText = semicolon === -1 ? "" : input.slice(semicolon);
-
-  const eq = pair.indexOf("=");
+  // Split on semicolons outside a quoted section, so values like
+  // `session="a=b;c"` don't leak into the attribute list.
+  const [pairText, ...attrChunks] = splitOnUnquoted(input, ";");
+  const eq = pairText.indexOf("=");
   if (eq === -1) return null;
 
-  const name = pair.slice(0, eq).trim();
-  const value = unquote(pair.slice(eq + 1).trim());
+  const name = pairText.slice(0, eq).trim();
   if (!name) return null;
+
+  const rawValue = pairText.slice(eq + 1).trim();
+  const quoted = isQuoted(rawValue);
+  const value = quoted ? rawValue.slice(1, -1) : rawValue;
 
   const attributes: CookieAttribute[] = [];
   const seen = new Set<string>();
 
-  for (const chunk of attrsText.split(";")) {
+  for (const chunk of attrChunks) {
     const text = chunk.trim();
     if (!text) continue;
 
     const aEq = text.indexOf("=");
     const aName = (aEq === -1 ? text : text.slice(0, aEq)).trim();
-    let aValue = aEq === -1 ? "" : text.slice(aEq + 1).trim();
     const lower = aName.toLowerCase();
-
     if (!aName || seen.has(lower)) continue;
     seen.add(lower);
 
+    const rawAttrValue = aEq === -1 ? "" : text.slice(aEq + 1).trim();
+    const attrQuoted = isQuoted(rawAttrValue);
+    let aValue = attrQuoted ? rawAttrValue.slice(1, -1) : rawAttrValue;
     if (lower === "samesite") aValue = canonicalSameSiteValue(aValue);
+
     attributes.push({
       name: canonicalAttributeName(aName),
       value: aValue,
       raw: text,
+      quoted: attrQuoted || undefined,
     });
   }
 
   return {
     name,
     value,
+    quoted: quoted || undefined,
     attributes,
     original: input,
     modified: false,
@@ -312,9 +362,9 @@ export function parseSetCookieHeader(
 /**
  * Serialize a parsed cookie back into a `Set-Cookie` header string.
  *
- * Cookies whose `modified` flag is unset and that were parsed from a header
- * (`original` present) are returned byte-for-byte unchanged. Modified or newly
- * built cookies are re-emitted from their attributes.
+ * Parsed-but-untouched cookies are returned byte-for-byte unchanged. Modified
+ * cookies are re-emitted from `name`/`value`/`attributes` **in their original
+ * attribute order**, preserving quoting on values that came in quoted.
  *
  * @param cookie The cookie to serialize.
  * @returns A single `Set-Cookie` header string.
@@ -324,11 +374,14 @@ export function serializeSetCookie(cookie: ParsedCookie): string {
     return cookie.original;
   }
 
-  let out = `${cookie.name}=${cookie.value}`;
+  const value = cookie.quoted ? `"${cookie.value}"` : cookie.value;
+  let out = `${cookie.name}=${value}`;
+
   for (const attr of cookie.attributes) {
     let text = attr.raw;
     if (attr.added || attr.modified || attr.raw === "") {
-      text = attr.name + (attr.value ? `=${attr.value}` : "");
+      const attrValue = attr.quoted ? `"${attr.value}"` : attr.value;
+      text = attr.name + (attr.value ? `=${attrValue}` : "");
     }
     out += `; ${text}`;
   }
@@ -340,11 +393,13 @@ function toCookieDate(date: Date): string {
 }
 
 /**
- * Build a `Set-Cookie` header string for a cookie not parsed from an existing header.
+ * Build a `Set-Cookie` header string for a new cookie.
  *
  * Attributes are emitted in a stable order: `Max-Age`, `Expires`, `Domain`, `Path`,
- * `Secure`, `HttpOnly`, `SameSite`. Note that `secure: true` in an `http:` dev
- * server context is commonly paired with `sameSite: "None"`.
+ * `Secure`, `HttpOnly`, `SameSite`.
+ *
+ * As with {@link rewriteCookie}, `SameSite=None` forces `Secure` (browsers reject a
+ * `None` cookie without it), so this serializer never builds an invalid cookie.
  *
  * @example
  * serializeCookie("session", "abc123", { path: "/", httpOnly: true, sameSite: "Lax" })
@@ -361,6 +416,7 @@ export function serializeCookie(
   options: CookieSerializeOptions = {},
 ): string {
   const attributes: CookieAttribute[] = [];
+  const secure = options.secure || options.sameSite === "None";
 
   if (options.maxAge !== undefined) {
     attributes.push({
@@ -382,7 +438,7 @@ export function serializeCookie(
   if (options.path !== undefined) {
     attributes.push({ name: "Path", value: options.path, raw: "" });
   }
-  if (options.secure) {
+  if (secure) {
     attributes.push({ name: "Secure", value: "", raw: "" });
   }
   if (options.httpOnly) {
@@ -423,7 +479,7 @@ export function getCookieAttribute(
  * Detect the RFC-6265bis name prefix of a cookie.
  *
  * `__Host-` and `__Secure-` prefixes impose browser-enforced requirements — see
- * {@link checkPrefixRequirements}.
+ * {@link checkPrefixRequirements} and the auto-fixes in {@link rewriteCookie}.
  *
  * @param name A cookie name.
  * @returns `"__Host-"`, `"__Secure-"`, or `""` when there is no prefix.
@@ -499,6 +555,15 @@ function findAttrIndex(
   return -1;
 }
 
+function attrValue(
+  attributes: CookieAttribute[],
+  lowerName: string,
+): string | undefined {
+  const idx = findAttrIndex(attributes, lowerName);
+  return idx === -1 ? undefined : attributes[idx].value;
+}
+
+/** Replace (keeping position) or append an attribute; returns true when anything changed. */
 function setAttr(
   attributes: CookieAttribute[],
   name: string,
@@ -520,6 +585,7 @@ function setAttr(
   return true;
 }
 
+/** Remove an attribute by name; returns true when anything changed. */
 function removeAttr(attributes: CookieAttribute[], lowerName: string): boolean {
   const idx = findAttrIndex(attributes, lowerName);
   if (idx === -1) return false;
@@ -527,6 +593,7 @@ function removeAttr(attributes: CookieAttribute[], lowerName: string): boolean {
   return true;
 }
 
+/** Add/remove a valueless flag; returns true when anything changed. */
 function setFlag(
   attributes: CookieAttribute[],
   name: string,
@@ -548,18 +615,40 @@ function setFlag(
 }
 
 /**
- * Rewrite a single parsed cookie according to a rewrite rule.
+ * Rewrite a single parsed cookie according to a rule, never emitting an invalid
+ * cookie.
+ *
+ * Existing attributes keep their position; only modified/added ones are rewritten,
+ * so the original attribute order is preserved as much as possible. Safety rules:
+ *
+ * - **SameSite=None forces Secure** — RFC 6265bis §5.2.8: browsers reject a `None`
+ *   cookie without `Secure`, so `Secure` is added (or kept) regardless of
+ *   `removeSecure`.
+ * - **Prefixed cookies stay valid** — a `__Host-`/`__Secure-` cookie always keeps
+ *   `Secure`; and because `__Host-` forbids a `Domain` (and demands `Path=/`),
+ *   setting `domain` — or removing/repowering `path` away from `/` — strips the
+ *   prefix so the result is still accepted by the browser.
+ * - `removePrefixes` strips the prefix explicitly (the least surprising way to get
+ *   a plain cookie onto a dev-server origin).
  *
  * Returns the input cookie unchanged (same reference) when nothing needs to change.
- * `rewriteDomain` is a deprecated shorthand for `removeDomain`, and `rewritePath` a
- * deprecated shorthand for `path: "/"` — prefer the explicit options.
  *
  * @example
+ * // localhost development: strip the production domain and scope cookies to "/"
  * rewriteCookie(
- *   parseSetCookieString("session=abc; Domain=api.example.com; Path=/api")!,
- *   { rewriteDomain: true, path: "/" },
+ *   parseSetCookieString("session=abc; Domain=api.example.com; Path=/api; SameSite=None")!,
+ *   { rewriteDomain: true, path: "/", sameSite: "Lax" },
  * )
- * // => "session=abc; Path=/"
+ * // => "session=abc; Path=/; SameSite=Lax"   (Domain gone; Secure NOT added since SameSite=Lax)
+ *
+ * @example
+ * // cross-domain auth behind HTTPS: pin the domain and keep SameSite=None valid
+ * rewriteCookie(
+ *   parseSetCookieString("session=abc; SameSite=None")!,
+ *   { domain: ".example.com", path: "/", sameSite: "None" },
+ * )
+ * // => "session=abc; SameSite=None; Domain=.example.com; Path=/; Secure"
+ * //    (Secure auto-added: SameSite=None requires it)
  *
  * @param cookie The cookie to rewrite.
  * @param rule The rewrite rules to apply.
@@ -569,18 +658,18 @@ export function rewriteCookie(
   cookie: ParsedCookie,
   rule: CookieRewriteRule,
 ): ParsedCookie {
-  const name = rule.removePrefixes
-    ? stripCookiePrefix(cookie.name)
-    : cookie.name;
   const attributes = cookie.attributes.map((a) => ({ ...a }));
+  const name = rule.removePrefixes ? stripCookiePrefix(cookie.name) : cookie.name;
   let changed = name !== cookie.name;
 
+  // Domain: remove wins over set.
   if (rule.removeDomain || rule.rewriteDomain) {
     changed = removeAttr(attributes, "domain") || changed;
   } else if (rule.domain !== undefined) {
     changed = setAttr(attributes, "Domain", "domain", rule.domain) || changed;
   }
 
+  // Path: remove wins over set; rewritePath is the legacy "set to /" shorthand.
   if (rule.removePath) {
     changed = removeAttr(attributes, "path") || changed;
   } else {
@@ -590,6 +679,8 @@ export function rewriteCookie(
       changed = setAttr(attributes, "Path", "path", nextPath) || changed;
     }
   }
+
+  // Secure / HttpOnly flags.
   if (rule.removeSecure) {
     changed = setFlag(attributes, "Secure", "secure", false) || changed;
   }
@@ -602,6 +693,8 @@ export function rewriteCookie(
   if (rule.httpOnly === true) {
     changed = setFlag(attributes, "HttpOnly", "httponly", true) || changed;
   }
+
+  // SameSite: remove wins over set.
   if (rule.removeSameSite) {
     changed = removeAttr(attributes, "samesite") || changed;
   }
@@ -609,14 +702,70 @@ export function rewriteCookie(
     changed = setAttr(attributes, "SameSite", "samesite", rule.sameSite) || changed;
   }
 
+  // ── Invariant enforcement (output must always be a valid cookie) ──
+  const prefix = getCookiePrefix(name);
+  const mustBeSecure =
+    attrValue(attributes, "samesite") === "None" || prefix !== "";
+  if (mustBeSecure && attrValue(attributes, "secure") === undefined) {
+    changed = setFlag(attributes, "Secure", "secure", true) || changed;
+  }
+
+  // __Host- requires Path=/ and no Domain. If the rule conflicts, the prefix is
+  // the thing that must give — stripping it keeps the cookie usable.
+  let nextName: string | undefined;
+  if (prefix === "__Host-") {
+    const path = attrValue(attributes, "path");
+    if (path !== "/" || findAttrIndex(attributes, "domain") !== -1) {
+      nextName = name.slice("__Host-".length);
+      if (nextName) {
+        changed = true;
+      } else {
+        nextName = undefined;
+      }
+    }
+  }
+
   if (!changed) return cookie;
 
   return {
     ...cookie,
-    name,
+    name: nextName ?? name,
     attributes,
     modified: true,
   };
+}
+
+/**
+ * Rewrite a single `Set-Cookie` header string.
+ *
+ * The public convenience API for {@link rewriteCookie}: parse → rewrite →
+ * serialize. Unparseable input is returned unchanged. Cookies needing no changes
+ * come back byte-for-byte identical.
+ *
+ * @example
+ * // Fix a broken Secure/SameSite combo from a backend in one line
+ * rewriteCookieString("session=abc; SameSite=None", { sameSite: "None" })
+ * // => "session=abc; SameSite=None; Secure"
+ *
+ * @example
+ * // Localhost development: make the session cookie valid on the dev origin
+ * rewriteCookieString("session=abc; Domain=api.example.com; Path=/api; HttpOnly", {
+ *   rewriteDomain: true,
+ *   path: "/",
+ * })
+ * // => "session=abc; Path=/; HttpOnly"
+ *
+ * @param header A single `Set-Cookie` header string.
+ * @param rule The rewrite rules to apply.
+ * @returns The rewritten `Set-Cookie` header string.
+ */
+export function rewriteCookieString(
+  header: string,
+  rule: CookieRewriteRule,
+): string {
+  const parsed = parseSetCookieString(header);
+  if (!parsed) return header.trim();
+  return serializeSetCookie(rewriteCookie(parsed, rule));
 }
 
 /**
@@ -675,10 +824,6 @@ export interface SetCookieHeaderContainer {
   [key: string]: string | string[] | undefined;
 }
 
-function isSetCookieKey(key: string): boolean {
-  return key.toLowerCase() === "set-cookie";
-}
-
 /**
  * Extract every `Set-Cookie` value from a headers object, in on-the-wire order.
  *
@@ -699,7 +844,7 @@ export function getSetCookieHeaderValues(
 ): string[] {
   const values: string[] = [];
   for (const key of Object.keys(headers)) {
-    if (!isSetCookieKey(key)) continue;
+    if (!CUT_KEY.test(key)) continue;
     const value = headers[key];
     if (value === undefined) continue;
     for (const entry of Array.isArray(value) ? value : [value]) {
@@ -724,18 +869,49 @@ export function getSetCookieHeaderValues(
  *
  * @param headers The headers object to mutate.
  * @param values One serialized header string per cookie (from
- *   {@link rewriteSetCookieHeaders} / {@link rewriteResponseSetCookies}).
+ *   {@link rewriteSetCookieHeaders} / {@link rewriteResponseSetCookies} /
+ *   {@link injectResponseCookies}).
  */
 export function setSetCookieHeaderValues(
   headers: SetCookieHeaderContainer,
   values: string[],
 ): void {
   for (const key of Object.keys(headers)) {
-    if (isSetCookieKey(key)) delete headers[key];
+    if (CUT_KEY.test(key)) delete headers[key];
   }
   if (values.length > 0) {
     headers["set-cookie"] = values;
   }
+}
+
+/**
+ * Inject extra cookies into a response's headers object, keeping existing
+ * `Set-Cookie` headers intact.
+ *
+ * Each injected cookie is appended to the response as its *own* header (RFC 6265)
+ * and inherits the serialization options (domain, path, secure, …).
+ *
+ * @example
+ * const headers = { "set-cookie": ["session=abc; Path=/"] };
+ * injectResponseCookies(headers, { feature_flag: "on" }, { path: "/", httpOnly: true });
+ * // headers["set-cookie"] => ["session=abc; Path=/", "feature_flag=on; Path=/; HttpOnly"]
+ *
+ * @param headers The response headers object (mutated in place).
+ * @param cookies A map of cookie name → value to add.
+ * @param options Serialization options applied to every injected cookie.
+ * @returns The full array of `Set-Cookie` header strings (existing + injected).
+ */
+export function injectResponseCookies(
+  headers: SetCookieHeaderContainer,
+  cookies: Record<string, string>,
+  options: CookieSerializeOptions = {},
+): string[] {
+  const values = getSetCookieHeaderValues(headers);
+  for (const [name, value] of Object.entries(cookies)) {
+    values.push(serializeCookie(name, value, options));
+  }
+  setSetCookieHeaderValues(headers, values);
+  return values;
 }
 
 /**
@@ -752,6 +928,10 @@ export function setSetCookieHeaderValues(
  * const headers = { "set-cookie": ["session=abc; Domain=api.example.com", "csrf=xyz; Path=/api"] };
  * rewriteResponseSetCookies(headers, { rewriteDomain: true });
  * // headers["set-cookie"] => ["session=abc", "csrf=xyz; Path=/api"]
+ *
+ * @example
+ * // Localhost pair of session + CSRF cookies, both scoped back to the dev origin
+ * rewriteResponseSetCookies(headers, { rewriteDomain: true, path: "/", secure: false })
  *
  * @param headers The raw response headers object (mutated in place).
  * @param rule The rewrite rules applied to each cookie.

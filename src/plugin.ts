@@ -10,38 +10,11 @@ import { resolveConfig } from "./config";
 import { createLogger } from "./logger";
 import type { Logger, ProxyLogHandle } from "./logger";
 import {
-  serializeCookie,
   parseSetCookieString,
   getSetCookieHeaderValues,
-  setSetCookieHeaderValues,
+  injectResponseCookies,
   rewriteResponseSetCookies,
 } from "./cookie";
-
-/**
- * Append the cookies declared in {@link CookieRewriteOptions.inject} to the base
- * `Set-Cookie` list, serialized with the rule's attribute settings.
- */
-function injectCookies(
-  rule: CookieRewriteOptions,
-  base: string[],
-): string[] {
-  const entries = Object.entries(rule.inject ?? {});
-  if (entries.length === 0) return base;
-
-  const out = base.slice();
-  for (const [name, value] of entries) {
-    out.push(
-      serializeCookie(name, value, {
-        domain: rule.domain,
-        path: rule.path,
-        secure: rule.secure,
-        httpOnly: rule.httpOnly,
-        sameSite: rule.sameSite,
-      }),
-    );
-  }
-  return out;
-}
 
 /**
  * Summarize a cookie rewriting pass for the `logCookieRewrites` option: which
@@ -133,11 +106,20 @@ function attachProxyHandlers(
         const before = getSetCookieHeaderValues(proxyRes.headers);
         // Extract → rewrite each cookie individually → write back as `string[]`,
         // guaranteeing one distinct Set-Cookie header per cookie.
-        const rewritten = rewriteResponseSetCookies(proxyRes.headers, cookieRule);
-        const merged = injectCookies(cookieRule, rewritten);
+        rewriteResponseSetCookies(proxyRes.headers, cookieRule);
         // Re-assign as a fresh array (never a joined string), so Node writes one
         // "Set-Cookie:" line per element. Empty ⇒ header is removed entirely.
-        setSetCookieHeaderValues(proxyRes.headers, merged);
+        const merged = injectResponseCookies(
+          proxyRes.headers,
+          cookieRule.inject ?? {},
+          {
+            domain: cookieRule.domain,
+            path: cookieRule.path,
+            secure: cookieRule.secure,
+            httpOnly: cookieRule.httpOnly,
+            sameSite: cookieRule.sameSite,
+          },
+        );
         if (logger && rule.log.options.logCookieRewrites) {
           logCookieRewrites(before, merged, cookieRule, logger);
         }
