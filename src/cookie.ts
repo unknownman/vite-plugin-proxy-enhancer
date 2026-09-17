@@ -339,6 +339,11 @@ export function parseSetCookieString(header: string): ParsedCookie | null {
  * Accepts a single header string (which may itself contain multiple cookies joined
  * by commas), an existing array, or nothing.
  *
+ * @example
+ * parseSetCookieHeader("a=1; Path=/, b=2; Path=/").map((c) => c.name); // => ["a", "b"]
+ * parseSetCookieHeader(["a=1", "b=2"]).length;                          // => 2
+ * parseSetCookieHeader(undefined);                                       // => []
+ *
  * @param input The raw `Set-Cookie` header, an array of them, or `undefined`/`null`.
  * @returns An array of parsed cookies (empty when the input is empty).
  */
@@ -365,6 +370,10 @@ export function parseSetCookieHeader(
  * Parsed-but-untouched cookies are returned byte-for-byte unchanged. Modified
  * cookies are re-emitted from `name`/`value`/`attributes` **in their original
  * attribute order**, preserving quoting on values that came in quoted.
+ *
+ * @example
+ * serializeSetCookie(parseSetCookieString("session=abc; Path=/")!);
+ * // => "session=abc; Path=/"  (identical to the input)
  *
  * @param cookie The cookie to serialize.
  * @returns A single `Set-Cookie` header string.
@@ -511,10 +520,17 @@ export function stripCookiePrefix(name: string): string {
  * set `Path=/` and must not set a `Domain`. Vendors may silently drop cookies that
  * violate these rules, so this is useful for diagnosing "cookie never sent" issues.
  *
+ * @example
+ * checkPrefixRequirements(parseSetCookieString("__Host-session=abc; Path=/; Secure")!)
+ * // => { prefix: "__Host-", violations: [] }
+ *
+ * checkPrefixRequirements(parseSetCookieString("__Host-session=abc; Domain=a.com")!)
+ * // => { prefix: "__Host-", violations: ['"__Host-" prefixed cookie ... MUST include the Secure attribute', ...] }
+ *
  * @param cookie The cookie to validate.
  * @returns A report with the detected prefix and a list of violations (empty when valid).
  */
-export function checkPrefixRequirements(cookie: ParsedCookie) {
+export function checkPrefixRequirements(cookie: ParsedCookie): CookiePrefixReport {
   const prefix = getCookiePrefix(cookie.name);
   const report: CookiePrefixReport = { prefix, violations: [] };
 
@@ -776,6 +792,13 @@ export function rewriteCookieString(
  * separate instead of being joined into one comma-separated value. Cookies listed
  * in {@link CookieRewriteRule.exclude} are passed through untouched.
  *
+ * @example
+ * rewriteSetCookieHeaders(
+ *   ["session=abc; Domain=api.example.com", "csrf=xyz; Domain=api.example.com"],
+ *   { rewriteDomain: true },
+ * );
+ * // => ["session=abc", "csrf=xyz"]
+ *
  * @param input The raw `Set-Cookie` header(s).
  * @param rule The rewrite rules to apply.
  * @returns One serialized header string per cookie.
@@ -866,6 +889,11 @@ export function getSetCookieHeaderValues(
  * `string[]`. Node's `ServerResponse.setHeader("set-cookie", [...])` then emits
  * one distinct `Set-Cookie` header per element, satisfying RFC 6265 §4.1. An
  * empty array removes the header entirely.
+ *
+ * @example
+ * const headers: SetCookieHeaderContainer = { "Set-Cookie": "a=1, b=2" };
+ * setSetCookieHeaderValues(headers, ["a=1", "b=2"]);
+ * // headers => { "set-cookie": ["a=1", "b=2"] }  (one header per cookie)
  *
  * @param headers The headers object to mutate.
  * @param values One serialized header string per cookie (from

@@ -2,13 +2,31 @@ import pc from "picocolors";
 import { STATUS_CODES } from "node:http";
 import type { LoggerOptions, LogLevel } from "./types";
 
-/** The console-like surface a {@link Logger} writes to. */
+/**
+ * The console-like surface a {@link Logger} writes to.
+ *
+ * Defaults to the global `console`. Pass a custom stream to capture output in
+ * tests, forward it to Vite's logger, or write it to a file.
+ *
+ * @example
+ * const lines: string[] = [];
+ * const logger = createLogger(
+ *   { color: false },
+ *   { log: (m) => lines.push(m), warn: (m) => lines.push(m), error: (m) => lines.push(m) },
+ * );
+ */
 export type LogStream = Pick<Console, "log" | "warn" | "error">;
 
-/** A Node headers-like object: header name → value, array, or nothing. */
+/**
+ * A Node headers-like object: header name → value, array of values, or nothing.
+ * Compatible with `http.IncomingHttpHeaders`.
+ */
 export type HeadersLike = Record<string, string | string[] | undefined>;
 
-/** Everything the logger needs to describe an outgoing proxied request. */
+/**
+ * Everything the logger needs to describe an outgoing proxied request, passed to
+ * {@link Logger.request}.
+ */
 export interface ProxyLogRequest {
   /** HTTP method, e.g. "GET". */
   method: string;
@@ -26,7 +44,7 @@ export interface ProxyLogRequest {
 export interface ProxyLogResponse {
   /** HTTP status code. */
   statusCode: number;
-  /** Raw response headers. */
+  /** Raw response headers (printed when `showResponseHeaders` is enabled). */
   headers?: HeadersLike;
   /** Captured response body (only when `showBody` is enabled). */
   body?: string;
@@ -39,16 +57,37 @@ export interface ProxyLogHandle {
 }
 
 /**
- * The plugin logger. Level-named methods emit prefixed, time-stamped lines at or
- * above the threshold configured by {@link LoggerOptions.level}. `request` starts
- * a per-request log that is printed when the response arrives.
+ * The plugin logger.
+ *
+ * Level-named methods emit prefixed, time-stamped lines at or above the threshold
+ * configured by {@link LoggerOptions.level}. `request` starts a per-request log
+ * whose line is printed when the response arrives (and includes status, duration,
+ * and target).
+ *
+ * Obtain one via {@link createLogger}, or let the plugin create it from your
+ * `logger` options.
+ *
+ * @example
+ * const logger = createLogger({ level: "info", color: false });
+ *
+ * logger.info("Listening on :5173");
+ * logger.warn("Using a self-signed certificate");
+ *
+ * const handle = logger.request({ method: "GET", url: "/api/users", target: "http://localhost:3001" });
+ * handle.end({ statusCode: 200 });
  */
 export interface Logger {
+  /** Whether any level at or above `warn` would be printed. */
   enabled: boolean;
+  /** Emit a message at `trace` level (most verbose). */
   trace(message: string): void;
+  /** Emit a message at `debug` level. */
   debug(message: string): void;
+  /** Emit a message at `info` level. */
   info(message: string): void;
+  /** Emit a message at `warn` level. */
   warn(message: string): void;
+  /** Emit a message at `error` level. */
   error(message: string): void;
   /** Start logging a proxied request. The returned handle prints on completion. */
   request(info: ProxyLogRequest): ProxyLogHandle;
